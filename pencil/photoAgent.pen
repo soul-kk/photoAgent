@@ -1,5 +1,5 @@
 {
-  "version": "2.10",
+  "version": "2.11",
   "children": [
     {
       "type": "frame",
@@ -501,6 +501,7 @@
       "height": 844,
       "fill": "#0A0A0A",
       "layout": "vertical",
+      "justifyContent": "center",
       "children": [
         {
           "type": "frame",
@@ -594,6 +595,7 @@
             120,
             24
           ],
+          "justifyContent": "end",
           "children": [
             {
               "type": "frame",
@@ -1226,6 +1228,7 @@
       "height": 844,
       "fill": "#0A0A0A",
       "layout": "vertical",
+      "justifyContent": "end",
       "children": [
         {
           "type": "frame",
