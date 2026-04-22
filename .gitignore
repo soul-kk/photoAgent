@@ -1,0 +1,59 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ===== Frontend (fe/) =====
+# dependencies
+fe/node_modules/
+
+# Expo
+fe/.expo/
+fe/dist/
+fe/web-build/
+fe/expo-env.d.ts
+
+# Native generated folders
+fe/ios/
+fe/android/
+
+# Metro
+fe/.metro-health-check*
+
+# debug logs
+fe/npm-debug.*
+fe/yarn-debug.*
+fe/yarn-error.*
+
+# local env files
+fe/.env*.local
+fe/.env
+
+# TypeScript
+fe/*.tsbuildinfo
+
+# Expo example
+fe/app-example/
+
+# Native signing
+fe/*.jks
+fe/*.p8
+fe/*.p12
+fe/*.key
+fe/*.mobileprovision
+fe/*.orig.*
+fe/.kotlin/
+
+# ===== Pencil design tool =====
+# Keep .pen design files but ignore generated images
+pencil/images/
+
+# ===== Environment & secrets =====
+.env
+.env.*
+!.env.example
+
+# ===== IDE =====
+.idea/
+*.swp
+*.swo
