@@ -1,0 +1,25 @@
+app:
+  name: "photography-Ai-helper"
+  port: "8080"
+  url: "http://localhost:8080"
+
+jwt:
+  secret: "change-me"
+  access_hours: 24
+
+mysql:
+  host: "localhost"
+  port: "3306"
+  username: "root"
+  password: "change-me"
+  database: "photography-Ai-helper"
+
+kimi:
+  api_key: ""
+  model: "kimi-k2.6"
+  base_url: "https://api.moonshot.cn/v1"
+
+rag:
+  enabled: false
+  top_k: 8
+  embedding_model: "moonshot-v1-embedding-2"

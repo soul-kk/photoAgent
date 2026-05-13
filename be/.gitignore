@@ -1,0 +1,6 @@
+/config/app.yaml
+*.exe
+.env
+.idea/
+.vscode/
+.run-server-*.txt
