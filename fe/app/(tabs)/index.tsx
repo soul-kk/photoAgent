@@ -1,98 +1,161 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
-
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import React from 'react';
+import {
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  StyleSheet,
+  SafeAreaView,
+} from 'react-native';
+import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { TabBar } from '@/components/tab-bar';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const router = useRouter();
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start😁</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+  return (
+    <SafeAreaView style={styles.root}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Hero */}
+        <View style={styles.hero}>
+          <Text style={styles.eyebrow}>AI PHOTOGRAPHY</Text>
+          <Text style={styles.headline}>LENS AI</Text>
+          <Text style={styles.tagline}>让每一张照片都值得被记住</Text>
+        </View>
+
+        {/* Cards */}
+        <View style={styles.cards}>
+          <TouchableOpacity
+            style={[styles.card, styles.cardBorderBottom]}
+            onPress={() => router.push('/analysis')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="scan-outline" size={24} color="#FFFFFF" />
+            <View style={styles.cardRow}>
+              <Text style={styles.cardTitle}>AI 摄影分析</Text>
+              <Text style={styles.cardArrow}>→</Text>
+            </View>
+            <Text style={styles.cardDesc}>
+              构图 · 色彩 · 曝光全方位解析，获得专业改进建议
+            </Text>
+            <View style={styles.tag}>
+              <Text style={styles.tagText}>核心功能</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.card}
+            onPress={() => router.push('/advice')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="camera-outline" size={24} color="#FFFFFF" />
+            <View style={styles.cardRow}>
+              <Text style={styles.cardTitle}>AI 拍摄建议</Text>
+              <Text style={styles.cardArrow}>→</Text>
+            </View>
+            <Text style={styles.cardDesc}>
+              拍前规划 · 机位 · 焦段建议，让每次出片都有方向
+            </Text>
+            <View style={styles.tag}>
+              <Text style={styles.tagText}>核心功能</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+
+      <TabBar />
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  root: {
+    flex: 1,
+    backgroundColor: '#0A0A0A',
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 100,
+  },
+  hero: {
+    height: 320,
+    backgroundColor: '#111111',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 24,
+    paddingBottom: 40,
+    gap: 4,
+  },
+  eyebrow: {
+    fontFamily: 'PlayfairDisplay_400Regular',
+    fontSize: 11,
+    color: '#555555',
+    letterSpacing: 4,
+  },
+  headline: {
+    fontFamily: 'PlayfairDisplay_700Bold',
+    fontSize: 80,
+    color: '#FFFFFF',
+    letterSpacing: 6,
+    lineHeight: 88,
+  },
+  tagline: {
+    fontFamily: 'PlayfairDisplay_400Regular',
+    fontSize: 16,
+    color: '#999999',
+  },
+  cards: {
+    gap: 1,
+    backgroundColor: '#1A1A1A',
+  },
+  card: {
+    backgroundColor: '#141414',
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    gap: 12,
+  },
+  cardBorderBottom: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#2A2A2A',
+  },
+  cardRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'space-between',
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  cardTitle: {
+    fontFamily: 'PlayfairDisplay_700Bold',
+    fontSize: 20,
+    color: '#FFFFFF',
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  cardArrow: {
+    fontFamily: 'PlayfairDisplay_400Regular',
+    fontSize: 20,
+    color: '#555555',
+  },
+  cardDesc: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 13,
+    color: '#999999',
+    lineHeight: 20.8,
+  },
+  tag: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#FFFFFF18',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 2,
+  },
+  tagText: {
+    fontFamily: 'DMMono_400Regular',
+    fontSize: 10,
+    color: '#FFFFFF',
+    letterSpacing: 1,
   },
 });
