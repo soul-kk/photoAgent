@@ -1,0 +1,78 @@
+replicaCount: 1
+
+image:
+  repository: crpi-wxtmmpsv7mbxgdvs.cn-hangzhou.personal.cr.aliyuncs.com/qqx12345/homework
+  pullPolicy: IfNotPresent
+  tag: "v1.0.0"
+
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets:
+  - name: aliyun-acr-pull-secret
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext: {}
+
+enableServiceLinks: false
+
+workingDir: /app
+command: []
+args: []
+
+containerPort: 8080
+
+service:
+  type: NodePort
+  port: 80
+  nodePort: null
+
+ingressRoute:
+  entryPoints:
+    - web
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+probes:
+  liveness:
+    path: /ping
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readiness:
+    path: /ping
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+config:
+  mountPath: /app/config/app.yaml
+  app:
+    name: "photography-Ai-helper"
+    port: "8080"
+    url: "http://localhost:8080"
+
+  jwt:
+    secret: "ajdaksdjaksdjaidjiadjasjdasldjahduwefgfhisjc"
+    access_hours: 24
+
+  mysql:
+    skip: false
+    host: "mysql.mysql.svc.cluster.local"
+    port: "3306"
+    username: "photoagent"
+    password: "vv4N2jof9eKTk7I83m"
+    rootPassword: "tHzqExHml0sl4wT3Uu"
+    database: "photoagent"
+
+  gemini:
+    api_key: "AIzaSyD3dFir4AlX-gTM_GPPXEFLpECZ2fm0zY8"
+    model: "gemini-2.0-flash"
+
+
+extraEnv: []

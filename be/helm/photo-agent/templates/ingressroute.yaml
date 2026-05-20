@@ -1,0 +1,15 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "photo-agent.fullname" . }}
+  labels:
+    {{- include "photo-agent.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    {{- toYaml .Values.ingressRoute.entryPoints | nindent 4 }}
+  routes:
+    - kind: Rule
+      match: Host(`photo-agent.local`) && PathPrefix(`/`)
+      services:
+        - name: {{ include "photo-agent.fullname" . }}
+          port: {{ .Values.service.port }}
