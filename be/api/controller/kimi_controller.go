@@ -16,24 +16,40 @@ import (
 	"time"
 
 	"go-service-starter/config"
+	"go-service-starter/core/imageprep"
 	"go-service-starter/core/libx"
-	"go-service-starter/core/photoscorer"
-	"go-service-starter/core/rag"
 
 	"github.com/gin-gonic/gin"
 )
-
-// ctxKeyPhotographyMetrics 单次请求内复用 CV 指标，避免重复解码；供 RAG 与融合共用。
-const ctxKeyPhotographyMetrics = "photography_score_metrics"
 
 type KimiController struct {
 	httpClient *http.Client
 }
 
+// kimiHTTPTimeout 非流式需等 Kimi 整段生成（多模态+长文），120s 易触发 502。
+const kimiHTTPTimeout = 300 * time.Second
+
 func NewKimiController() *KimiController {
 	return &KimiController{
-		httpClient: &http.Client{Timeout: 120 * time.Second},
+		httpClient: &http.Client{Timeout: kimiHTTPTimeout},
 	}
+}
+
+// kimiK26ChatExtras kimi-k2.6 要求 temperature=1；非流式长生成需足够 max_tokens。
+func kimiK26ChatExtras(maxTokens int) map[string]any {
+	extras := map[string]any{"temperature": 1}
+	if maxTokens > 0 {
+		extras["max_tokens"] = maxTokens
+	}
+	return extras
+}
+
+// kimiUpstreamContext 避免 Apifox/客户端先断开导致 Request.Context 取消，仍给 Kimi 完整超时窗口。
+func kimiUpstreamContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), kimiHTTPTimeout)
 }
 
 func (k *KimiController) RegisterPublic(r *gin.RouterGroup) {
@@ -51,11 +67,15 @@ func (k *KimiController) RegisterProtected(r *gin.RouterGroup) {
 	r.POST("/kimi/score-photo", k.PhotographyScoreImage)
 	r.GET("/kimi/photography/score-image", k.photoScoreMethodHint)
 	r.GET("/kimi/score-photo", k.photoScoreMethodHint)
+	r.POST("/kimi/photography/shoot-advice", k.PhotographyShootAdvice)
+	r.POST("/kimi/shoot-advice", k.PhotographyShootAdvice)
+	r.GET("/kimi/photography/shoot-advice", k.photoShootAdviceMethodHint)
+	r.GET("/kimi/shoot-advice", k.photoShootAdviceMethodHint)
 }
 
 func (k *KimiController) photoAnalyzeMethodHint(c *gin.Context) {
 	libx.Err(c, http.StatusMethodNotAllowed,
-		"请使用 POST（需先登录；Header：Authorization: Bearer <token>）；multipart 字段 image 或 file。路径：POST /api/kimi/photography/analyze-image 或 POST /api/kimi/analyze-photo",
+		"请使用 POST（需先登录；Bearer token）；multipart：image/file；可选 prompt。默认 ?stream=true：SSE（event meta/chunk/done，meta 含 format=markdown、image 压缩信息）；?stream=false 返回 JSON（含 text）。路径：POST /api/kimi/photography/analyze-image",
 		nil)
 }
 
@@ -70,13 +90,6 @@ const maxImageUploadBytes = 20 << 20
 
 // kimiModelK26 多模态接口固定使用该模型（不使用配置文件里的默认模型占位）
 const kimiModelK26 = "kimi-k2.6"
-
-// photographySystemPrompt 摄影分析接口的系统提示（引导模型从摄影专业角度输出）
-var photographySystemPrompt = strings.TrimSpace(`
-你是一位经验丰富的摄影指导与影像评审。用户会上传一张照片，请你基于画面给出专业、可执行的分析与建议。
-请尽量从以下维度展开（若画面信息不足可简要说明）：构图与画面平衡、曝光与明暗层次、色彩与白平衡、对焦与景深、光线方向与质感、主体表达与叙事意图。
-语气友善、具体：先简要肯定亮点，再指出可改进之处，并给出拍摄参数、取景或后期方面的可操作建议。
-`)
 
 const photographyUserBase = "请根据上述要求，对附图从摄影角度进行分析并给出建议。"
 
@@ -156,8 +169,9 @@ func publicKimiNetworkErr(err error) error {
 		return fmt.Errorf("连接 Kimi（Moonshot）接口超时，请检查网络或 HTTPS_PROXY")
 	}
 	low := strings.ToLower(err.Error())
-	if strings.Contains(low, "timeout") || strings.Contains(low, "i/o timeout") {
-		return fmt.Errorf("连接 Kimi（Moonshot）接口超时，请检查网络或 HTTPS_PROXY")
+	if strings.Contains(low, "timeout") || strings.Contains(low, "i/o timeout") ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("连接 Kimi（Moonshot）接口超时（非流式 stream=false 常需 1–3 分钟；请将 Apifox 超时设为 300s+，或改用 stream=true）")
 	}
 	if strings.Contains(low, "connection refused") {
 		return fmt.Errorf("连接被拒绝，请检查本机或 HTTPS_PROXY 代理是否可用")
@@ -248,8 +262,11 @@ func (k *KimiController) postKimiChat(ctx context.Context, model, base, apiKey s
 	if err != nil {
 		return 0, nil, err
 	}
+	upCtx, upCancel := kimiUpstreamContext(ctx)
+	defer upCancel()
+
 	apiURL := strings.TrimRight(strings.TrimSpace(base), "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(upCtx, http.MethodPost, apiURL, bytes.NewReader(raw))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -268,10 +285,36 @@ func (k *KimiController) postKimiChat(ctx context.Context, model, base, apiKey s
 	return resp.StatusCode, body, nil
 }
 
-func imageBinaryToDataURL(raw []byte, mimeHint string) (string, error) {
+// imageBinaryToDataURL 将图片压缩为 JPEG 后编码为 data URL，供 Kimi 多模态调用；压缩失败时回退为原图 data URL。
+func imageBinaryToDataURL(raw []byte, mimeHint string) (string, map[string]any, error) {
 	if len(raw) == 0 {
-		return "", fmt.Errorf("图像数据为空")
+		return "", nil, fmt.Errorf("图像数据为空")
 	}
+	compressed, meta, err := imageprep.CompressForUpload(raw, mimeHint)
+	if err == nil {
+		b64 := base64.StdEncoding.EncodeToString(compressed)
+		metaMap := map[string]any{
+			"compressed":       true,
+			"original_bytes":   meta.OriginalBytes,
+			"compressed_bytes": meta.CompressedBytes,
+			"resized":          meta.Resized,
+			"mime":             "image/jpeg",
+		}
+		return "data:image/jpeg;base64," + b64, metaMap, nil
+	}
+	url, rawErr := imageBinaryToDataURLRaw(raw, mimeHint)
+	metaMap := map[string]any{
+		"compressed":     false,
+		"original_bytes":   len(raw),
+		"compress_error":   err.Error(),
+	}
+	if rawErr != nil {
+		return "", metaMap, rawErr
+	}
+	return url, metaMap, nil
+}
+
+func imageBinaryToDataURLRaw(raw []byte, mimeHint string) (string, error) {
 	mimeHint = strings.TrimSpace(strings.ToLower(mimeHint))
 	if mimeHint != "" && mimeHint != "application/octet-stream" && strings.HasPrefix(mimeHint, "image/") {
 		b64 := base64.StdEncoding.EncodeToString(raw)
@@ -397,7 +440,7 @@ func (k *KimiController) RecognizeImageBinary(c *gin.Context) {
 		return
 	}
 
-	dataURL, err := imageBinaryToDataURL(raw, mimeHint)
+	dataURL, _, err := imageBinaryToDataURL(raw, mimeHint)
 	if err != nil {
 		libx.Err(c, http.StatusBadRequest, err.Error(), nil)
 		return
@@ -416,6 +459,7 @@ func (k *KimiController) RecognizeImageBinary(c *gin.Context) {
 
 // PhotographyAnalyzeImage 使用 kimi-k2.6 多模态，从摄影角度分析与建议（system + user 引导）；需在 JWT 保护路由下调用。
 func (k *KimiController) PhotographyAnalyzeImage(c *gin.Context) {
+	t0 := time.Now()
 	cfg := config.GetConfig()
 	key := sanitizeKimiAPIKey(cfg.Kimi.APIKey)
 	if key == "" {
@@ -444,26 +488,71 @@ func (k *KimiController) PhotographyAnalyzeImage(c *gin.Context) {
 		libx.Err(c, httpStatus, errMsg, nil)
 		return
 	}
+	log.Printf("photography/analyze: read_image %d bytes in %s", len(raw), time.Since(t0))
 
-	dataURL, err := imageBinaryToDataURL(raw, mimeHint)
+	tCompress := time.Now()
+	dataURL, imgMeta, err := imageBinaryToDataURL(raw, mimeHint)
 	if err != nil {
 		libx.Err(c, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+	log.Printf("photography/analyze: compress meta=%v in %s", imgMeta, time.Since(tCompress))
+
+	stream := wantsPhotographyAnalyzeStream(c)
+	if stream {
+		k.photographyAnalyzeStream(c, model, base, key, userLine, dataURL, imgMeta, extra)
+		log.Printf("photography/analyze: stream_handoff total_prep=%s", time.Since(t0))
 		return
 	}
 
 	userContent := buildKimiUserContent(userLine, []string{dataURL}, nil)
 	msgs := []map[string]any{
-		{"role": "system", "content": photographySystemPrompt},
+		{"role": "system", "content": photographyAnalyzeSystemPrompt},
 		{"role": "user", "content": userContent},
 	}
+	extras := kimiK26ChatExtras(photographyAnalyzeMaxTokens)
 
-	status, respBody, err := k.postKimiChat(c.Request.Context(), model, base, key, msgs, nil)
+	tKimi := time.Now()
+	status, respBody, err := k.postKimiChat(c.Request.Context(), model, base, key, msgs, extras)
+	log.Printf("photography/analyze: kimi round-trip %s err=%v", time.Since(tKimi), err)
 	if err != nil {
 		log.Printf("kimi upstream error: %v", err)
 		libx.Err(c, http.StatusBadGateway, "调用 Kimi 失败", publicKimiNetworkErr(err))
 		return
 	}
-	k.finishKimiFromUpstream(c, status, respBody, model)
+	k.finishPhotographyAnalyzeFromUpstream(c, status, respBody, model, imgMeta, extra)
+	log.Printf("photography/analyze: done total=%s", time.Since(t0))
+}
+
+func (k *KimiController) finishPhotographyAnalyzeFromUpstream(
+	c *gin.Context, status int, respBody []byte, model string, imgMeta map[string]any, userPrompt string,
+) {
+	if status != http.StatusOK {
+		if status == http.StatusUnauthorized {
+			libx.Err(c, http.StatusUnauthorized,
+				"Kimi 鉴权失败：密钥与 base_url 需同属一国别开放平台——在中国大陆申请的密钥请设 kimi.base_url 为 https://api.moonshot.cn/v1；国际/ kimi.ai 侧密钥一般用 https://api.moonshot.ai/v1。并核对密钥未过期、整串粘贴且无多余字符",
+				nil)
+			return
+		}
+		libx.Err(c, status, "Kimi 返回错误", fmt.Errorf("%s", string(respBody)))
+		return
+	}
+	out, err := parseKimiChatResponse(respBody)
+	if err != nil {
+		libx.Err(c, http.StatusBadGateway, "解析 Kimi 响应失败", err)
+		return
+	}
+	data := gin.H{
+		"rubric_id": photographyAnalyzeRubricID,
+		"model":     model,
+		"format":    "markdown",
+		"image":     imgMeta,
+		"text":      out,
+	}
+	if strings.TrimSpace(userPrompt) != "" {
+		data["prompt"] = strings.TrimSpace(userPrompt)
+	}
+	libx.Ok(c, "ok", data)
 }
 
 const photographyScoreRubricID = "photography_v2"
@@ -533,7 +622,7 @@ func parsePhotographyScoreModelJSON(jsonStr string) (photographyScoreModelJSON, 
 	return p, nil
 }
 
-func (k *KimiController) finishKimiScoreFromUpstream(c *gin.Context, status int, respBody []byte, model string, rawImg []byte) {
+func (k *KimiController) finishKimiScoreFromUpstream(c *gin.Context, status int, respBody []byte, model string) {
 	if status != http.StatusOK {
 		if status == http.StatusUnauthorized {
 			libx.Err(c, http.StatusUnauthorized,
@@ -558,44 +647,6 @@ func (k *KimiController) finishKimiScoreFromUpstream(c *gin.Context, status int,
 	cScore := roundClampScore(payload.ColorScore)
 	coScore := roundClampScore(payload.CompositionScore)
 	tScore := roundClampScore(payload.TechniqueScore)
-	llmC, llmCo, llmT := cScore, coScore, tScore
-
-	fusionH := gin.H{
-		"enabled":         false,
-		"method":          "llm_cv_weighted_v1",
-		"fusion_version":  "cv_metrics_v3",
-		"weights_digest":  photoscorer.FusionWeightsNote,
-	}
-	if len(rawImg) > 0 {
-		var m photoscorer.Metrics
-		var errCV error
-		if v, ok := c.Get(ctxKeyPhotographyMetrics); ok {
-			if pm, ok2 := v.(photoscorer.Metrics); ok2 {
-				m = pm
-			} else {
-				m, errCV = photoscorer.MetricsFromBytes(rawImg)
-			}
-		} else {
-			m, errCV = photoscorer.MetricsFromBytes(rawImg)
-		}
-		if errCV != nil {
-			fusionH["cv_decode_error"] = errCV.Error()
-		} else {
-			fr := photoscorer.FuseLLMWithMetrics(llmC, llmCo, llmT, m)
-			cScore, coScore, tScore = fr.FinalColor, fr.FinalComposition, fr.FinalTechnique
-			fusionH["enabled"] = true
-			fusionH["objective_metrics"] = fr.Metrics
-			fusionH["llm_subscores"] = gin.H{
-				"color": llmC, "composition": llmCo, "technique": llmT,
-			}
-			fusionH["blend_weights"] = gin.H{
-				"color_llm": fr.ColorLLMWeight, "technique_llm": fr.TechniqueLLMWeight,
-				"composition_llm": fr.CompositionLLMWeight,
-			}
-		}
-	} else {
-		fusionH["hint"] = "无原始图像字节，跳过像素级客观融合"
-	}
 
 	overall := weightedOverallPhotographyScore(cScore, coScore, tScore)
 	notes := payload.DimensionNotes
@@ -605,11 +656,7 @@ func (k *KimiController) finishKimiScoreFromUpstream(c *gin.Context, status int,
 	lowDiff := cScore >= 46 && cScore <= 54 && coScore >= 46 && coScore <= 54 && tScore >= 46 && tScore <= 54
 	disp := gin.H{"low_differentiation": lowDiff}
 	if lowDiff {
-		disp["hint"] = "三项子分均落在 46–54，易为模型「安全中段」或客观量也居中；请对照 dimension_notes 与 algorithm_fusion 人工复核。"
-	}
-	var ragOut any
-	if v, exists := c.Get(rag.CtxKeyScoreRAG); exists {
-		ragOut = v
+		disp["hint"] = "三项子分均落在 46–54，易为模型「安全中段」；请对照 dimension_notes 人工复核。"
 	}
 	libx.Ok(c, "ok", gin.H{
 		"rubric_id":         photographyScoreRubricID,
@@ -622,8 +669,6 @@ func (k *KimiController) finishKimiScoreFromUpstream(c *gin.Context, status int,
 		"text_analysis":     strings.TrimSpace(payload.TextAnalysis),
 		"dimension_notes":   notes,
 		"score_dispersion":  disp,
-		"algorithm_fusion":  fusionH,
-		"rag":               ragOut,
 	})
 }
 
@@ -657,35 +702,15 @@ func (k *KimiController) PhotographyScoreImage(c *gin.Context) {
 		return
 	}
 
-	dataURL, err := imageBinaryToDataURL(raw, mimeHint)
+	dataURL, _, err := imageBinaryToDataURL(raw, mimeHint)
 	if err != nil {
 		libx.Err(c, http.StatusBadRequest, err.Error(), nil)
 		return
 	}
 
-	mCV, errCV := photoscorer.MetricsFromBytes(raw)
-	if errCV == nil {
-		c.Set(ctxKeyPhotographyMetrics, mCV)
-	}
-	ragAugment := ""
-	ragMeta := map[string]any{"enabled": false, "reason": "cv_decode_or_disabled"}
-	if errCV == nil {
-		aug, meta := rag.BuildPhotographyScoreRAG(c.Request.Context(), k.httpClient, &cfg.Rag, key, base, mCV, extra)
-		ragAugment = aug
-		ragMeta = meta
-	} else {
-		ragMeta["cv_error"] = errCV.Error()
-	}
-	c.Set(rag.CtxKeyScoreRAG, ragMeta)
-
-	systemPrompt := photographyScoreSystemPrompt
-	if strings.TrimSpace(ragAugment) != "" {
-		systemPrompt = photographyScoreSystemPrompt + "\n\n" + ragAugment
-	}
-
 	userContent := buildKimiUserContent(userLine, []string{dataURL}, nil)
 	msgs := []map[string]any{
-		{"role": "system", "content": systemPrompt},
+		{"role": "system", "content": photographyScoreSystemPrompt},
 		{"role": "user", "content": userContent},
 	}
 
@@ -703,7 +728,7 @@ func (k *KimiController) PhotographyScoreImage(c *gin.Context) {
 		libx.Err(c, http.StatusBadGateway, "调用 Kimi 失败", publicKimiNetworkErr(err))
 		return
 	}
-	k.finishKimiScoreFromUpstream(c, status, respBody, model, raw)
+	k.finishKimiScoreFromUpstream(c, status, respBody, model)
 }
 
 func (k *KimiController) Generate(c *gin.Context) {
