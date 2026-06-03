@@ -32,7 +32,7 @@ export default function HomeScreen() {
         <View style={styles.cards}>
           <TouchableOpacity
             style={[styles.card, styles.cardBorderBottom]}
-            onPress={() => router.push('/analysis')}
+            onPress={() => router.push('./analysis')}
             activeOpacity={0.8}
           >
             <Ionicons name="scan-outline" size={24} color="#FFFFFF" />
@@ -50,7 +50,7 @@ export default function HomeScreen() {
 
           <TouchableOpacity
             style={styles.card}
-            onPress={() => router.push('/advice')}
+            onPress={() => router.push('./advice')}
             activeOpacity={0.8}
           >
             <Ionicons name="camera-outline" size={24} color="#FFFFFF" />
