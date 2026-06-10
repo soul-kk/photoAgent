@@ -15,9 +15,33 @@ import (
 
 // 上传 Kimi 前压缩：控制长边与 JPEG 质量，降低上游视觉 token 与延迟。
 const (
-	MaxLongEdge = 1024
-	JPEGQuality = 80
+	DefaultMaxLongEdge = 1024
+	DefaultJPEGQuality = 80
 )
+
+// 兼容旧测试与引用
+const (
+	MaxLongEdge = DefaultMaxLongEdge
+	JPEGQuality = DefaultJPEGQuality
+)
+
+var uploadOpts = struct {
+	MaxLongEdge int
+	JPEGQuality int
+}{
+	MaxLongEdge: DefaultMaxLongEdge,
+	JPEGQuality: DefaultJPEGQuality,
+}
+
+// ApplyConfig 从 app.yaml 的 image 段应用压缩参数（≤0 的字段忽略）。
+func ApplyConfig(maxLongEdge, jpegQuality int) {
+	if maxLongEdge > 0 {
+		uploadOpts.MaxLongEdge = maxLongEdge
+	}
+	if jpegQuality > 0 && jpegQuality <= 100 {
+		uploadOpts.JPEGQuality = jpegQuality
+	}
+}
 
 // Meta 压缩结果元信息（可写入 SSE meta 事件）。
 type Meta struct {
@@ -39,13 +63,14 @@ func CompressForUpload(raw []byte, mimeHint string) (out []byte, meta Meta, err 
 	b := im.Bounds()
 	w, h := b.Dx(), b.Dy()
 	nw, nh := w, h
-	if w >= h && w > MaxLongEdge {
-		nw = MaxLongEdge
-		nh = max(1, h*MaxLongEdge/w)
+	maxEdge := uploadOpts.MaxLongEdge
+	if w >= h && w > maxEdge {
+		nw = maxEdge
+		nh = max(1, h*maxEdge/w)
 		meta.Resized = true
-	} else if h > w && h > MaxLongEdge {
-		nh = MaxLongEdge
-		nw = max(1, w*MaxLongEdge/h)
+	} else if h > w && h > maxEdge {
+		nh = maxEdge
+		nw = max(1, w*maxEdge/h)
 		meta.Resized = true
 	}
 	var rgba *image.RGBA
@@ -57,7 +82,7 @@ func CompressForUpload(raw []byte, mimeHint string) (out []byte, meta Meta, err 
 		rgba = dst
 	}
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, rgba, &jpeg.Options{Quality: JPEGQuality}); err != nil {
+	if err := jpeg.Encode(&buf, rgba, &jpeg.Options{Quality: uploadOpts.JPEGQuality}); err != nil {
 		return nil, meta, fmt.Errorf("JPEG 编码失败: %w", err)
 	}
 	out = buf.Bytes()

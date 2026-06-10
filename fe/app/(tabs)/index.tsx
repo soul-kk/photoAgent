@@ -49,7 +49,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.card}
+            style={[styles.card, styles.cardBorderBottom]}
             onPress={() => router.push('./advice')}
             activeOpacity={0.8}
           >
@@ -63,6 +63,42 @@ export default function HomeScreen() {
             </Text>
             <View style={styles.tag}>
               <Text style={styles.tagText}>核心功能</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.card, styles.cardBorderBottom]}
+            onPress={() => router.push('/compare')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="images-outline" size={24} color="#FFFFFF" />
+            <View style={styles.cardRow}>
+              <Text style={styles.cardTitle}>图片质量判断</Text>
+              <Text style={styles.cardArrow}>→</Text>
+            </View>
+            <Text style={styles.cardDesc}>
+              多图对比 · 智能排序 · 自动推荐最佳照片
+            </Text>
+            <View style={[styles.tag, styles.tagExtend]}>
+              <Text style={styles.tagText}>拓展功能</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.card}
+            onPress={() => router.push('/tone')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="color-palette-outline" size={24} color="#FFFFFF" />
+            <View style={styles.cardRow}>
+              <Text style={styles.cardTitle}>影调风格建议</Text>
+              <Text style={styles.cardArrow}>→</Text>
+            </View>
+            <Text style={styles.cardDesc}>
+              描述目标风格，生成曝光 · 对比度 · 色温等后期参数
+            </Text>
+            <View style={[styles.tag, styles.tagExtend]}>
+              <Text style={styles.tagText}>拓展功能</Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -157,5 +193,8 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#FFFFFF',
     letterSpacing: 1,
+  },
+  tagExtend: {
+    backgroundColor: '#FFFFFF10',
   },
 });

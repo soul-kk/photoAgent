@@ -16,18 +16,29 @@ type Config struct {
 	JWT   JWTConfig   `mapstructure:"jwt"`
 	MySQL MySQLConfig `mapstructure:"mysql"`
 	Kimi  KimiConfig  `mapstructure:"kimi"`
+	Image ImageConfig `mapstructure:"image"`
 }
 
 type KimiConfig struct {
-	APIKey  string `mapstructure:"api_key"`
-	Model   string `mapstructure:"model"`
-	BaseURL string `mapstructure:"base_url"`
+	APIKey         string `mapstructure:"api_key"`
+	Model          string `mapstructure:"model"`
+	BaseURL        string `mapstructure:"base_url"`
+	TimeoutSec     int    `mapstructure:"timeout_sec"`
+	MaxConcurrent  int    `mapstructure:"max_concurrent"`
+	QueueWaitSec   int    `mapstructure:"queue_wait_sec"`
+	ScoreMaxTokens int    `mapstructure:"score_max_tokens"`
+}
+
+type ImageConfig struct {
+	MaxLongEdge int `mapstructure:"max_long_edge"`
+	JPEGQuality int `mapstructure:"jpeg_quality"`
 }
 
 type AppConfig struct {
-	Name string `mapstructure:"name"`
-	Port string `mapstructure:"port"`
-	URL  string `mapstructure:"url"`
+	Name          string `mapstructure:"name"`
+	Port          string `mapstructure:"port"`
+	URL           string `mapstructure:"url"`
+	ShutdownSec   int    `mapstructure:"shutdown_sec"`
 }
 
 type JWTConfig struct {

@@ -15,6 +15,11 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/context/auth';
 import { TabBar } from '@/components/tab-bar';
+import {
+  fetchPhotographyAnalyze,
+  type AnalyzeFocusDimension,
+  type PhotographyAnalyzeResponse,
+} from '@/lib/api';
 
 type DimensionKey = 'composition' | 'color' | 'exposure' | 'content';
 
@@ -26,27 +31,15 @@ type DimensionResult = {
   note: string;
 };
 
-type ScoreApiData = {
-  color_score?: number;
-  composition_score?: number;
-  exposure_score?: number;
-  content_score?: number;
-  technique_score?: number;
-  overall_score?: number;
-  text_analysis?: string;
-  dimension_notes?: Partial<Record<DimensionKey | 'technique', string>>;
+type AnalysisResult = {
+  overall_score: number;
+  dimension_scores: Record<DimensionKey, number>;
+  dimension_notes: Record<DimensionKey, string>;
+  overall_analysis: string;
+  improvement_tips: string[];
+  focused_dimension?: string;
+  focused_deep_analysis?: string;
 };
-
-type ScoreApiResponse = {
-  code?: number;
-  err_code?: number;
-  data?: ScoreApiData;
-  message?: string;
-  msg?: string;
-};
-
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, '') ?? 'http://192.168.3.68:8080';
 
 const DIMENSION_META: Pick<DimensionResult, 'key' | 'label' | 'icon'>[] = [
   { key: 'composition', label: '构图', icon: 'grid-outline' },
@@ -74,48 +67,36 @@ function buildImagePart(asset: ImagePicker.ImagePickerAsset) {
   };
 }
 
-function buildDimensions(data: ScoreApiData): DimensionResult[] {
-  const notes = data.dimension_notes ?? {};
-
-  return DIMENSION_META.map((dim) => {
-    const fallbackTechnique = dim.key === 'exposure' ? data.technique_score : undefined;
-    const scoreKey = `${dim.key}_score` as keyof ScoreApiData;
-    return {
-      ...dim,
-      score: clampScore(data[scoreKey] ?? fallbackTechnique),
-      note:
-        notes[dim.key] ??
-        (dim.key === 'exposure' ? notes.technique : undefined) ??
-        '暂无该维度评语，请稍后重试。',
-    };
-  });
+function mapAnalyzeResponse(data: PhotographyAnalyzeResponse): AnalysisResult {
+  return {
+    overall_score: data.overall_score,
+    dimension_scores: data.dimension_scores,
+    dimension_notes: data.dimension_notes,
+    overall_analysis: data.overall_analysis,
+    improvement_tips: data.improvement_tips,
+    focused_dimension: data.focused_dimension,
+    focused_deep_analysis: data.focused_deep_analysis,
+  };
 }
 
-async function requestAnalysis(asset: ImagePicker.ImagePickerAsset, token: string | null) {
-  const formData = new FormData();
-  formData.append('image', buildImagePart(asset) as any);
+function buildDimensions(data: AnalysisResult): DimensionResult[] {
+  return DIMENSION_META.map((dim) => ({
+    ...dim,
+    score: clampScore(data.dimension_scores[dim.key]),
+    note: data.dimension_notes[dim.key] ?? '暂无该维度评语，请稍后重试。',
+  }));
+}
 
-  const headers: Record<string, string> = {};
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  const res = await fetch(`${API_BASE_URL}/api/kimi/photography/score-image`, {
-    method: 'POST',
-    headers,
-    body: formData,
+async function requestAnalysis(
+  asset: ImagePicker.ImagePickerAsset,
+  token: string,
+  focus?: AnalyzeFocusDimension,
+) {
+  const data = await fetchPhotographyAnalyze(token, asset.uri, {
+    focusDimension: focus,
+    mimeType: asset.mimeType ?? 'image/jpeg',
   });
-
-  const json = (await res.json().catch(() => null)) as ScoreApiResponse | null;
-  if (!res.ok) {
-    throw new Error(json?.message ?? json?.msg ?? `请求失败：${res.status}`);
-  }
-
-  const data = json?.data ?? (json as ScoreApiData | null);
-  if (!data) {
-    throw new Error('接口未返回分析结果');
-  }
-  return data;
+  return mapAnalyzeResponse(data);
 }
 
 export default function AnalysisScreen() {
@@ -124,7 +105,7 @@ export default function AnalysisScreen() {
   const [photo, setPhoto] = React.useState<ImagePicker.ImagePickerAsset | null>(null);
   const [activeDim, setActiveDim] = React.useState<DimensionKey | null>(null);
   const [loading, setLoading] = React.useState(false);
-  const [result, setResult] = React.useState<ScoreApiData | null>(null);
+  const [result, setResult] = React.useState<AnalysisResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   const dimensions = React.useMemo(() => (result ? buildDimensions(result) : []), [result]);
@@ -175,15 +156,21 @@ export default function AnalysisScreen() {
     }
   }
 
-  async function handleAnalyze() {
-    if (!photo || loading) return;
+  async function handleAnalyze(deepFocus = false) {
+    if (!photo || loading || !token) return;
 
     setLoading(true);
     setError(null);
-    setActiveDim(null);
+    if (!deepFocus) {
+      setActiveDim(null);
+    }
     try {
-      const data = await requestAnalysis(photo, token);
+      const focus = deepFocus && activeDim ? activeDim : undefined;
+      const data = await requestAnalysis(photo, token, focus);
       setResult(data);
+      if (deepFocus && activeDim) {
+        setActiveDim(activeDim);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : '分析失败，请稍后重试。';
       setError(message);
@@ -233,7 +220,7 @@ export default function AnalysisScreen() {
 
         <TouchableOpacity
           style={[styles.analyzeBtn, (!photo || loading) && styles.analyzeBtnDisabled]}
-          onPress={handleAnalyze}
+          onPress={() => handleAnalyze(false)}
           activeOpacity={0.85}
           disabled={!photo || loading}
         >
@@ -269,6 +256,20 @@ export default function AnalysisScreen() {
           })}
         </View>
 
+        {activeDim ? (
+          <TouchableOpacity
+            style={[styles.deepBtn, (!photo || loading) && styles.analyzeBtnDisabled]}
+            onPress={() => handleAnalyze(true)}
+            disabled={!photo || loading}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.deepBtnText}>
+              深入分析：
+              {DIMENSION_META.find((d) => d.key === activeDim)?.label}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+
         <View style={styles.divider} />
 
         <Text style={styles.sectionLabel}>分析结果</Text>
@@ -297,10 +298,27 @@ export default function AnalysisScreen() {
                   <Text style={styles.reportText}>{dim.note}</Text>
                 </View>
               ))}
-              {!activeDim && result.text_analysis ? (
+              {!activeDim ? (
                 <>
                   <View style={styles.reportDivider} />
-                  <Text style={styles.reportSuggest}>{result.text_analysis}</Text>
+                  <Text style={styles.reportSuggest}>{result.overall_analysis}</Text>
+                  {result.improvement_tips.length > 0 ? (
+                    <>
+                      <View style={styles.reportDivider} />
+                      <Text style={styles.reportSuggest}>
+                        {result.improvement_tips.map((t, i) => `${i + 1}. ${t}`).join('\n')}
+                      </Text>
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+              {activeDim &&
+              result.focused_dimension === activeDim &&
+              result.focused_deep_analysis ? (
+                <>
+                  <View style={styles.reportDivider} />
+                  <Text style={styles.reportLabel}>深入分析</Text>
+                  <Text style={styles.reportSuggest}>{result.focused_deep_analysis}</Text>
                 </>
               ) : null}
             </View>
@@ -439,6 +457,18 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_700Bold',
     fontSize: 15,
     color: '#0A0A0A',
+  },
+  deepBtn: {
+    borderWidth: 1,
+    borderColor: '#444444',
+    borderRadius: 4,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  deepBtnText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 13,
+    color: '#CCCCCC',
   },
   sectionLabel: {
     fontFamily: 'DMMono_400Regular',

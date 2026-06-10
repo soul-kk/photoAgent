@@ -2,6 +2,7 @@ app:
   name: "photography-Ai-helper"
   port: "8080"
   url: "http://localhost:8080"
+  shutdown_sec: 60          # 优雅停机等待 in-flight 请求（秒）
 
 jwt:
   secret: "change-me"
@@ -18,3 +19,11 @@ kimi:
   api_key: ""
   model: "kimi-k2.6"
   base_url: "https://api.moonshot.cn/v1"
+  timeout_sec: 300          # 上游 Kimi HTTP 超时（秒）
+  max_concurrent: 5         # 同时打 Kimi 的最大请求数
+  queue_wait_sec: 30        # 排队等槽位最长时间，超时返回 503
+  score_max_tokens: 800     # score-image 输出 token 上限
+
+image:
+  max_long_edge: 1024       # 上传 Kimi 前压缩长边（像素）
+  jpeg_quality: 80          # JPEG 质量 1–100

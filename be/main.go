@@ -33,7 +33,11 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutdown Server ...")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownSec := config.GetConfig().App.ShutdownSec
+	if shutdownSec <= 0 {
+		shutdownSec = 60
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(shutdownSec)*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("Server Shutdown Error: %s", err.Error())

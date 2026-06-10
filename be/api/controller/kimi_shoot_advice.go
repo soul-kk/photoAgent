@@ -2,12 +2,14 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 
 	"go-service-starter/config"
+	"go-service-starter/core/kimigate"
 	"go-service-starter/core/libx"
 
 	"github.com/gin-gonic/gin"
@@ -203,6 +205,7 @@ func (k *KimiController) PhotographyShootAdvice(c *gin.Context) {
 	}
 
 	dataURL, imgMeta, err := imageBinaryToDataURL(raw, mimeHint)
+	raw = nil
 	if err != nil {
 		libx.Err(c, http.StatusBadRequest, err.Error(), nil)
 		return
@@ -225,6 +228,9 @@ func (k *KimiController) PhotographyShootAdvice(c *gin.Context) {
 
 	status, respBody, err := k.postKimiChat(c.Request.Context(), model, base, key, msgs, extras)
 	if err != nil {
+		if k.respondKimiGateBusy(c, err) {
+			return
+		}
 		log.Printf("kimi shoot-advice upstream error: %v", err)
 		libx.Err(c, http.StatusBadGateway, "调用 Kimi 失败", publicKimiNetworkErr(err))
 		return
@@ -308,6 +314,11 @@ func (k *KimiController) photographyShootAdviceStream(
 		"subject": subject,
 	})
 	if err := k.postKimiChatStream(c.Request.Context(), model, base, key, msgs, extras, c); err != nil {
+		if errors.Is(err, kimigate.ErrTooManyConcurrent) {
+			c.Header("Retry-After", "30")
+			_ = writeSSE(c, "error", gin.H{"message": "AI 服务繁忙，请稍后重试", "code": 503})
+			return
+		}
 		_ = writeSSE(c, "error", gin.H{"message": publicKimiStreamErr(err)})
 	}
 }

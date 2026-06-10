@@ -5,24 +5,35 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+
+	"go-service-starter/core/kimigate"
 
 	"github.com/gin-gonic/gin"
 )
 
 const photographyAnalyzeMaxTokens = 1024
 
-const photographyAnalyzeRubricID = "photography_analyze_v1"
+const photographyAnalyzeRubricID = "photography_analyze_v2"
 
+// 默认 stream=false 返回四维 JSON 评分；stream=true 时输出 Markdown（含可选深入维度章节）。
 func wantsPhotographyAnalyzeStream(c *gin.Context) bool {
 	s := strings.TrimSpace(strings.ToLower(c.Query("stream")))
+	if s == "true" || s == "1" || s == "yes" {
+		return true
+	}
 	if s == "false" || s == "0" || s == "no" {
 		return false
 	}
-	return true
+	// POST 表单可覆盖
+	if s = strings.TrimSpace(strings.ToLower(c.PostForm("stream"))); s == "true" || s == "1" {
+		return true
+	}
+	return false
 }
 
 func writeSSE(c *gin.Context, event string, payload any) error {
@@ -47,6 +58,11 @@ func (k *KimiController) postKimiChatStream(
 	payloadExtras map[string]any,
 	c *gin.Context,
 ) error {
+	if err := k.gate.Acquire(ctx); err != nil {
+		return err
+	}
+	defer k.gate.Release()
+
 	payload := map[string]any{
 		"model":    model,
 		"messages": messages,
@@ -59,7 +75,7 @@ func (k *KimiController) postKimiChatStream(
 	if err != nil {
 		return err
 	}
-	upCtx, upCancel := kimiUpstreamContext(ctx)
+	upCtx, upCancel := k.gate.StreamUpstreamContext(ctx)
 	defer upCancel()
 
 	apiURL := strings.TrimRight(strings.TrimSpace(base), "/") + "/chat/completions"
@@ -71,7 +87,7 @@ func (k *KimiController) postKimiChatStream(
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "text/event-stream")
 
-	resp, err := k.httpClient.Do(req)
+	resp, err := k.gate.HTTPClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -86,6 +102,11 @@ func (k *KimiController) postKimiChatStream(
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
+		select {
+		case <-upCtx.Done():
+			return upCtx.Err()
+		default:
+		}
 		line := sc.Text()
 		if line == "" {
 			continue
@@ -167,20 +188,6 @@ func writePhotographyStreamMeta(c *gin.Context, rubricID, model string, imgMeta 
 	return writeSSE(c, "meta", meta)
 }
 
-// photographyAnalyzeSystemPrompt 摄影分析（流式/非流式共用，控制篇幅以降低超时）。
-var photographyAnalyzeSystemPrompt = strings.TrimSpace(`
-你是摄影指导。针对用户上传的已拍照片，用 Markdown 输出简洁中文分析：
-## 概览（1–2句）
-## 构图与曝光
-## 色彩与技术
-## 改进建议（3～4条可执行要点）
-## 总结（1句）
-仅依据画面可见信息；先肯定亮点再指出问题；不要冗长复述。
-`)
-
-// 兼容旧名
-var photographyAnalyzeStreamSystemPrompt = photographyAnalyzeSystemPrompt
-
 func (k *KimiController) photographyAnalyzeStream(
 	c *gin.Context,
 	model, base, key string,
@@ -188,23 +195,39 @@ func (k *KimiController) photographyAnalyzeStream(
 	dataURL string,
 	compressMeta map[string]any,
 	userPrompt string,
+	focusKey string,
+	hasFocus bool,
 ) {
+	sysPrompt := photographyAnalyzeStreamSystemPrompt(hasFocus, focusKey)
 	msgs := []map[string]any{
-		{"role": "system", "content": photographyAnalyzeStreamSystemPrompt},
+		{"role": "system", "content": sysPrompt},
 		{"role": "user", "content": buildKimiUserContent(userLine, []string{dataURL}, nil)},
 	}
-	extras := kimiK26ChatExtras(photographyAnalyzeMaxTokens)
+	maxTok := photographyAnalyzeMaxTokens
+	if hasFocus {
+		maxTok = photographyAnalyzeJSONMaxTokens
+	}
+	extras := kimiK26ChatExtras(maxTok)
 
 	writePhotographyStreamHeaders(c)
-	metaExtra := map[string]any{}
+	metaExtra := map[string]any{"format": "markdown"}
 	if strings.TrimSpace(userPrompt) != "" {
 		metaExtra["prompt"] = strings.TrimSpace(userPrompt)
+	}
+	if hasFocus {
+		metaExtra["focus_dimension"] = focusKey
+		metaExtra["focus_dimension_label"] = analyzeDimensionLabels[focusKey]
 	}
 	if err := writePhotographyStreamMeta(c, photographyAnalyzeRubricID, model, compressMeta, metaExtra); err != nil {
 		return
 	}
 
 	if err := k.postKimiChatStream(c.Request.Context(), model, base, key, msgs, extras, c); err != nil {
+		if errors.Is(err, kimigate.ErrTooManyConcurrent) {
+			c.Header("Retry-After", "30")
+			_ = writeSSE(c, "error", gin.H{"message": "AI 服务繁忙，请稍后重试", "code": 503})
+			return
+		}
 		_ = writeSSE(c, "error", gin.H{"message": publicKimiStreamErr(err)})
 	}
 }

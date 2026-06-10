@@ -17,22 +17,44 @@ import (
 
 	"go-service-starter/config"
 	"go-service-starter/core/imageprep"
+	"go-service-starter/core/kimigate"
 	"go-service-starter/core/libx"
 
 	"github.com/gin-gonic/gin"
 )
 
 type KimiController struct {
-	httpClient *http.Client
+	gate *kimigate.Gate
 }
 
-// kimiHTTPTimeout 非流式需等 Kimi 整段生成（多模态+长文），120s 易触发 502。
-const kimiHTTPTimeout = 300 * time.Second
-
 func NewKimiController() *KimiController {
-	return &KimiController{
-		httpClient: &http.Client{Timeout: kimiHTTPTimeout},
+	cfg := config.GetConfig()
+	gate := kimigate.New(kimigate.Options{
+		MaxConcurrent: cfg.Kimi.MaxConcurrent,
+		TimeoutSec:    cfg.Kimi.TimeoutSec,
+		QueueWaitSec:  cfg.Kimi.QueueWaitSec,
+	})
+	maxC, timeoutSec, queueSec := cfg.Kimi.MaxConcurrent, cfg.Kimi.TimeoutSec, cfg.Kimi.QueueWaitSec
+	if maxC <= 0 {
+		maxC = 5
 	}
+	if timeoutSec <= 0 {
+		timeoutSec = 300
+	}
+	if queueSec <= 0 {
+		queueSec = 30
+	}
+	log.Printf("kimigate: max_concurrent=%d timeout_sec=%d queue_wait_sec=%d", maxC, timeoutSec, queueSec)
+	return &KimiController{gate: gate}
+}
+
+func (k *KimiController) respondKimiGateBusy(c *gin.Context, err error) bool {
+	if !errors.Is(err, kimigate.ErrTooManyConcurrent) {
+		return false
+	}
+	c.Header("Retry-After", "30")
+	libx.Err(c, http.StatusServiceUnavailable, "AI 服务繁忙，请稍后重试", err)
+	return true
 }
 
 // kimiK26ChatExtras kimi-k2.6 要求 temperature=1；非流式长生成需足够 max_tokens。
@@ -44,12 +66,8 @@ func kimiK26ChatExtras(maxTokens int) map[string]any {
 	return extras
 }
 
-// kimiUpstreamContext 避免 Apifox/客户端先断开导致 Request.Context 取消，仍给 Kimi 完整超时窗口。
-func kimiUpstreamContext(parent context.Context) (context.Context, context.CancelFunc) {
-	if parent == nil {
-		parent = context.Background()
-	}
-	return context.WithTimeout(context.WithoutCancel(parent), kimiHTTPTimeout)
+func (k *KimiController) kimiUpstreamContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return k.gate.UpstreamContext(parent)
 }
 
 func (k *KimiController) RegisterPublic(r *gin.RouterGroup) {
@@ -71,11 +89,19 @@ func (k *KimiController) RegisterProtected(r *gin.RouterGroup) {
 	r.POST("/kimi/shoot-advice", k.PhotographyShootAdvice)
 	r.GET("/kimi/photography/shoot-advice", k.photoShootAdviceMethodHint)
 	r.GET("/kimi/shoot-advice", k.photoShootAdviceMethodHint)
+	r.POST("/kimi/photography/compare-images", k.PhotographyCompareImages)
+	r.POST("/kimi/compare-photos", k.PhotographyCompareImages)
+	r.GET("/kimi/photography/compare-images", k.photoCompareMethodHint)
+	r.GET("/kimi/compare-photos", k.photoCompareMethodHint)
+	r.POST("/kimi/photography/tone-style", k.PhotographyToneStyle)
+	r.POST("/kimi/tone-style", k.PhotographyToneStyle)
+	r.GET("/kimi/photography/tone-style", k.photoToneStyleMethodHint)
+	r.GET("/kimi/tone-style", k.photoToneStyleMethodHint)
 }
 
 func (k *KimiController) photoAnalyzeMethodHint(c *gin.Context) {
 	libx.Err(c, http.StatusMethodNotAllowed,
-		"请使用 POST（需先登录；Bearer token）；multipart：image/file；可选 prompt。默认 ?stream=true：SSE（event meta/chunk/done，meta 含 format=markdown、image 压缩信息）；?stream=false 返回 JSON（含 text）。路径：POST /api/kimi/photography/analyze-image",
+		"请使用 POST（需先登录；Bearer token）；multipart：image/file；可选 prompt、focus_dimension（构图|色彩|曝光|内容识别 或 composition|color|exposure|content）。默认 stream=false：四维 JSON 评分+整体分析；指定 focus_dimension 时额外返回 focused_deep_analysis。stream=true 为 SSE Markdown。路径：POST /api/kimi/photography/analyze-image",
 		nil)
 }
 
@@ -259,6 +285,11 @@ func buildKimiUserContent(text string, images, videos []string) any {
 }
 
 func (k *KimiController) postKimiChat(ctx context.Context, model, base, apiKey string, messages []map[string]any, payloadExtras map[string]any) (statusCode int, respBody []byte, reqErr error) {
+	if err := k.gate.Acquire(ctx); err != nil {
+		return 0, nil, err
+	}
+	defer k.gate.Release()
+
 	payload := map[string]any{
 		"model":    model,
 		"messages": messages,
@@ -270,7 +301,7 @@ func (k *KimiController) postKimiChat(ctx context.Context, model, base, apiKey s
 	if err != nil {
 		return 0, nil, err
 	}
-	upCtx, upCancel := kimiUpstreamContext(ctx)
+	upCtx, upCancel := k.kimiUpstreamContext(ctx)
 	defer upCancel()
 
 	apiURL := strings.TrimRight(strings.TrimSpace(base), "/") + "/chat/completions"
@@ -281,7 +312,7 @@ func (k *KimiController) postKimiChat(ctx context.Context, model, base, apiKey s
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := k.httpClient.Do(req)
+	resp, err := k.gate.HTTPClient().Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -449,6 +480,7 @@ func (k *KimiController) RecognizeImageBinary(c *gin.Context) {
 	}
 
 	dataURL, _, err := imageBinaryToDataURL(raw, mimeHint)
+	raw = nil
 	if err != nil {
 		libx.Err(c, http.StatusBadRequest, err.Error(), nil)
 		return
@@ -458,6 +490,9 @@ func (k *KimiController) RecognizeImageBinary(c *gin.Context) {
 	msgs := []map[string]any{{"role": "user", "content": userContent}}
 	status, respBody, err := k.postKimiChat(c.Request.Context(), model, base, key, msgs, nil)
 	if err != nil {
+		if k.respondKimiGateBusy(c, err) {
+			return
+		}
 		log.Printf("kimi upstream error: %v", err)
 		libx.Err(c, http.StatusBadGateway, "调用 Kimi 失败", publicKimiNetworkErr(err))
 		return
@@ -482,14 +517,13 @@ func (k *KimiController) PhotographyAnalyzeImage(c *gin.Context) {
 		base = "https://api.moonshot.ai/v1"
 	}
 
+	ensureMultipartParsed(c)
 	extra := strings.TrimSpace(c.Query("prompt"))
 	if extra == "" {
 		extra = strings.TrimSpace(c.PostForm("prompt"))
 	}
-	userLine := photographyUserBase
-	if extra != "" {
-		userLine = photographyUserBase + "\n\n【用户补充关注点】" + extra
-	}
+	focusKey, hasFocus := readAnalyzeFocusDimension(c)
+	userLine := buildAnalyzeUserLine(photographyUserBase, extra, focusKey, hasFocus)
 
 	raw, mimeHint, httpStatus, errMsg := readSingleImageBinary(c)
 	if httpStatus != 0 {
@@ -500,6 +534,7 @@ func (k *KimiController) PhotographyAnalyzeImage(c *gin.Context) {
 
 	tCompress := time.Now()
 	dataURL, imgMeta, err := imageBinaryToDataURL(raw, mimeHint)
+	raw = nil
 	if err != nil {
 		libx.Err(c, http.StatusBadRequest, err.Error(), nil)
 		return
@@ -508,59 +543,36 @@ func (k *KimiController) PhotographyAnalyzeImage(c *gin.Context) {
 
 	stream := wantsPhotographyAnalyzeStream(c)
 	if stream {
-		k.photographyAnalyzeStream(c, model, base, key, userLine, dataURL, imgMeta, extra)
-		log.Printf("photography/analyze: stream_handoff total_prep=%s", time.Since(t0))
+		k.photographyAnalyzeStream(c, model, base, key, userLine, dataURL, imgMeta, extra, focusKey, hasFocus)
+		log.Printf("photography/analyze: stream_handoff focus=%v total_prep=%s", hasFocus, time.Since(t0))
 		return
 	}
 
 	userContent := buildKimiUserContent(userLine, []string{dataURL}, nil)
 	msgs := []map[string]any{
-		{"role": "system", "content": photographyAnalyzeSystemPrompt},
+		{"role": "system", "content": photographyAnalyzeJSONSystemPrompt(hasFocus, focusKey)},
 		{"role": "user", "content": userContent},
 	}
-	extras := kimiK26ChatExtras(photographyAnalyzeMaxTokens)
+	extras := kimiK26ChatExtras(photographyAnalyzeJSONMaxTokens)
+	extras["response_format"] = map[string]string{"type": "json_object"}
 
 	tKimi := time.Now()
 	status, respBody, err := k.postKimiChat(c.Request.Context(), model, base, key, msgs, extras)
-	log.Printf("photography/analyze: kimi round-trip %s err=%v", time.Since(tKimi), err)
+	log.Printf("photography/analyze: kimi round-trip %s focus=%v err=%v", time.Since(tKimi), hasFocus, err)
 	if err != nil {
+		if k.respondKimiGateBusy(c, err) {
+			return
+		}
 		log.Printf("kimi upstream error: %v", err)
 		libx.Err(c, http.StatusBadGateway, "调用 Kimi 失败", publicKimiNetworkErr(err))
 		return
 	}
-	k.finishPhotographyAnalyzeFromUpstream(c, status, respBody, model, imgMeta, extra)
+	expectFocus := ""
+	if hasFocus {
+		expectFocus = focusKey
+	}
+	k.finishPhotographyAnalyzeJSONFromUpstream(c, status, respBody, model, imgMeta, extra, expectFocus)
 	log.Printf("photography/analyze: done total=%s", time.Since(t0))
-}
-
-func (k *KimiController) finishPhotographyAnalyzeFromUpstream(
-	c *gin.Context, status int, respBody []byte, model string, imgMeta map[string]any, userPrompt string,
-) {
-	if status != http.StatusOK {
-		if status == http.StatusUnauthorized {
-			libx.Err(c, http.StatusUnauthorized,
-				"Kimi 鉴权失败：密钥与 base_url 需同属一国别开放平台——在中国大陆申请的密钥请设 kimi.base_url 为 https://api.moonshot.cn/v1；国际/ kimi.ai 侧密钥一般用 https://api.moonshot.ai/v1。并核对密钥未过期、整串粘贴且无多余字符",
-				nil)
-			return
-		}
-		libx.Err(c, status, "Kimi 返回错误", fmt.Errorf("%s", string(respBody)))
-		return
-	}
-	out, err := parseKimiChatResponse(respBody)
-	if err != nil {
-		libx.Err(c, http.StatusBadGateway, "解析 Kimi 响应失败", err)
-		return
-	}
-	data := gin.H{
-		"rubric_id": photographyAnalyzeRubricID,
-		"model":     model,
-		"format":    "markdown",
-		"image":     imgMeta,
-		"text":      out,
-	}
-	if strings.TrimSpace(userPrompt) != "" {
-		data["prompt"] = strings.TrimSpace(userPrompt)
-	}
-	libx.Ok(c, "ok", data)
 }
 
 const photographyScoreRubricID = "photography_v2"
@@ -737,6 +749,7 @@ func (k *KimiController) PhotographyScoreImage(c *gin.Context) {
 	}
 
 	dataURL, _, err := imageBinaryToDataURL(raw, mimeHint)
+	raw = nil
 	if err != nil {
 		libx.Err(c, http.StatusBadRequest, err.Error(), nil)
 		return
@@ -748,16 +761,20 @@ func (k *KimiController) PhotographyScoreImage(c *gin.Context) {
 		{"role": "user", "content": userContent},
 	}
 
-	extras := map[string]any{
-		// kimi-k2.6 多模态等：上游仅接受 temperature=1，其它值会报 invalid temperature
-		"temperature": 1,
-		"response_format": map[string]string{
-			"type": "json_object",
-		},
+	scoreMaxTokens := config.GetConfig().Kimi.ScoreMaxTokens
+	if scoreMaxTokens <= 0 {
+		scoreMaxTokens = 800
+	}
+	extras := kimiK26ChatExtras(scoreMaxTokens)
+	extras["response_format"] = map[string]string{
+		"type": "json_object",
 	}
 
 	status, respBody, err := k.postKimiChat(c.Request.Context(), model, base, key, msgs, extras)
 	if err != nil {
+		if k.respondKimiGateBusy(c, err) {
+			return
+		}
 		log.Printf("kimi upstream error: %v", err)
 		libx.Err(c, http.StatusBadGateway, "调用 Kimi 失败", publicKimiNetworkErr(err))
 		return
@@ -805,6 +822,9 @@ func (k *KimiController) Generate(c *gin.Context) {
 
 	status, respBody, err := k.postKimiChat(c.Request.Context(), model, base, key, msgs, nil)
 	if err != nil {
+		if k.respondKimiGateBusy(c, err) {
+			return
+		}
 		log.Printf("kimi upstream error: %v", err)
 		libx.Err(c, http.StatusBadGateway, "调用 Kimi 失败", publicKimiNetworkErr(err))
 		return

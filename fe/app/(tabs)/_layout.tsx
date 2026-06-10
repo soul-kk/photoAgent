@@ -12,6 +12,8 @@ export default function TabLayout() {
       <Tabs.Screen name="analysis" />
       <Tabs.Screen name="advice" />
       <Tabs.Screen name="profile" />
+      <Tabs.Screen name="compare" />
+      <Tabs.Screen name="tone" />
     </Tabs>
   );
 }
