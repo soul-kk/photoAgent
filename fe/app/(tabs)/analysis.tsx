@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
+import { useAuth } from '@/context/auth';
 import { TabBar } from '@/components/tab-bar';
 
 type DimensionKey = 'composition' | 'color' | 'exposure' | 'content';
@@ -45,7 +47,6 @@ type ScoreApiResponse = {
 
 const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, '') ?? 'http://192.168.3.68:8080';
-const AUTH_TOKEN = process.env.EXPO_PUBLIC_AUTH_TOKEN;
 
 const DIMENSION_META: Pick<DimensionResult, 'key' | 'label' | 'icon'>[] = [
   { key: 'composition', label: '构图', icon: 'grid-outline' },
@@ -90,13 +91,13 @@ function buildDimensions(data: ScoreApiData): DimensionResult[] {
   });
 }
 
-async function requestAnalysis(asset: ImagePicker.ImagePickerAsset) {
+async function requestAnalysis(asset: ImagePicker.ImagePickerAsset, token: string | null) {
   const formData = new FormData();
   formData.append('image', buildImagePart(asset) as any);
 
   const headers: Record<string, string> = {};
-  if (AUTH_TOKEN) {
-    headers.Authorization = `Bearer ${AUTH_TOKEN}`;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
 
   const res = await fetch(`${API_BASE_URL}/api/kimi/photography/score-image`, {
@@ -118,6 +119,8 @@ async function requestAnalysis(asset: ImagePicker.ImagePickerAsset) {
 }
 
 export default function AnalysisScreen() {
+  const { token } = useAuth();
+  const router = useRouter();
   const [photo, setPhoto] = React.useState<ImagePicker.ImagePickerAsset | null>(null);
   const [activeDim, setActiveDim] = React.useState<DimensionKey | null>(null);
   const [loading, setLoading] = React.useState(false);
@@ -128,6 +131,27 @@ export default function AnalysisScreen() {
   const visibleDimensions = activeDim
     ? dimensions.filter((dim) => dim.key === activeDim)
     : dimensions;
+
+  // Auth guard
+  if (!token) {
+    return (
+      <SafeAreaView style={styles.root}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>AI 摄影分析</Text>
+          <Text style={styles.headerSub}>上传照片开始分析</Text>
+        </View>
+        <View style={styles.authGate}>
+          <Ionicons name="lock-closed-outline" size={32} color="#555555" />
+          <Text style={styles.authGateTitle}>需要登录</Text>
+          <Text style={styles.authGateText}>请登录后使用 AI 分析功能</Text>
+          <TouchableOpacity style={styles.authGateBtn} onPress={() => router.push('/auth' as any)}>
+            <Text style={styles.authGateBtnText}>去登录</Text>
+          </TouchableOpacity>
+        </View>
+        <TabBar />
+      </SafeAreaView>
+    );
+  }
 
   async function handlePickImage() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -158,7 +182,7 @@ export default function AnalysisScreen() {
     setError(null);
     setActiveDim(null);
     try {
-      const data = await requestAnalysis(photo);
+      const data = await requestAnalysis(photo, token);
       setResult(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : '分析失败，请稍后重试。';
@@ -585,5 +609,38 @@ const styles = StyleSheet.create({
     fontFamily: 'DMSans_400Regular',
     fontSize: 12,
     color: '#555555',
+  },
+  authGate: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingHorizontal: 40,
+    paddingBottom: 80,
+  },
+  authGateTitle: {
+    fontFamily: 'PlayfairDisplay_700Bold',
+    fontSize: 20,
+    color: '#FFFFFF',
+  },
+  authGateText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    color: '#555555',
+    textAlign: 'center',
+  },
+  authGateBtn: {
+    marginTop: 8,
+    height: 48,
+    paddingHorizontal: 32,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  authGateBtnText: {
+    fontFamily: 'DMSans_700Bold',
+    fontSize: 14,
+    color: '#0A0A0A',
   },
 });

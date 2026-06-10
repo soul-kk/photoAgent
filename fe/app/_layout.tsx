@@ -13,16 +13,41 @@ import {
   DMMono_500Medium,
 } from '@expo-google-fonts/dm-mono';
 import { useFonts } from 'expo-font';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import React from 'react';
 import 'react-native-reanimated';
+import { AuthProvider, useAuth } from '@/context/auth';
 
 export const unstable_settings = {
   anchor: '(tabs)',
 };
 
+// Inner layout reads auth state — must be a child of AuthProvider
+function InnerLayout({ fontsLoaded }: { fontsLoaded: boolean }) {
+  const { token, isLoaded } = useAuth();
+  const router = useRouter();
+
+  React.useEffect(() => {
+    if (!isLoaded || !fontsLoaded) return;
+    if (!token) router.replace('/auth');
+  }, [isLoaded, fontsLoaded, token]);
+
+  if (!fontsLoaded || !isLoaded) return null;
+
+  return (
+    <ThemeProvider value={DarkTheme}>
+      <Stack>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="auth" options={{ headerShown: false }} />
+      </Stack>
+      <StatusBar style="light" />
+    </ThemeProvider>
+  );
+}
+
 export default function RootLayout() {
-  const [loaded] = useFonts({
+  const [fontsLoaded] = useFonts({
     PlayfairDisplay_400Regular,
     PlayfairDisplay_700Bold,
     DMSans_400Regular,
@@ -32,14 +57,9 @@ export default function RootLayout() {
     DMMono_500Medium,
   });
 
-  if (!loaded) return null;
-
   return (
-    <ThemeProvider value={DarkTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      </Stack>
-      <StatusBar style="light" />
-    </ThemeProvider>
+    <AuthProvider>
+      <InnerLayout fontsLoaded={fontsLoaded ?? false} />
+    </AuthProvider>
   );
 }

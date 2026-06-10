@@ -13,6 +13,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
+import { useAuth } from '@/context/auth';
 import { TabBar } from '@/components/tab-bar';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -31,6 +33,7 @@ interface AdviceResult {
 async function fetchAdvice(
   _imageUri: string,
   _subject: string,
+  _token: string | null,
 ): Promise<AdviceResult> {
   // TODO: replace with actual API call
   // e.g. const formData = new FormData(); formData.append('image', ...); formData.append('subject', subject);
@@ -196,11 +199,46 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   resetBtnText: { fontFamily: 'DMMono_400Regular', fontSize: 12, color: '#555555' },
+  authGate: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingHorizontal: 40,
+    paddingBottom: 80,
+  },
+  authGateTitle: {
+    fontFamily: 'PlayfairDisplay_700Bold',
+    fontSize: 20,
+    color: '#FFFFFF',
+  },
+  authGateText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    color: '#555555',
+    textAlign: 'center',
+  },
+  authGateBtn: {
+    marginTop: 8,
+    height: 48,
+    paddingHorizontal: 32,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  authGateBtnText: {
+    fontFamily: 'DMSans_700Bold',
+    fontSize: 14,
+    color: '#0A0A0A',
+  },
 });
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function AdviceScreen() {
+  const { token } = useAuth();
+  const router = useRouter();
   const [step, setStep] = React.useState<Step>(1);
   const [imageUri, setImageUri] = React.useState<string | null>(null);
   const [subject, setSubject] = React.useState('');
@@ -230,7 +268,7 @@ export default function AdviceScreen() {
     setStep(3);
     setLoading(true);
     try {
-      const data = await fetchAdvice(imageUri, subject.trim());
+      const data = await fetchAdvice(imageUri, subject.trim(), token);
       setResult(data);
     } catch {
       Alert.alert('请求失败', '请稍后重试');
@@ -246,6 +284,27 @@ export default function AdviceScreen() {
     setSubject('');
     setResult(null);
     setLoading(false);
+  }
+
+  // Auth guard
+  if (!token) {
+    return (
+      <SafeAreaView style={styles.root}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>AI 拍摄建议</Text>
+          <Text style={styles.headerSub}>拍前规划</Text>
+        </View>
+        <View style={styles.authGate}>
+          <Ionicons name="lock-closed-outline" size={32} color="#555555" />
+          <Text style={styles.authGateTitle}>需要登录</Text>
+          <Text style={styles.authGateText}>请登录后使用 AI 拍摄建议功能</Text>
+          <TouchableOpacity style={styles.authGateBtn} onPress={() => router.push('/auth' as any)}>
+            <Text style={styles.authGateBtnText}>去登录</Text>
+          </TouchableOpacity>
+        </View>
+        <TabBar />
+      </SafeAreaView>
+    );
   }
 
   return (

@@ -15,6 +15,7 @@ const TABS: Tab[] = [
   { name: 'index', label: '首页', href: '/', icon: 'home-outline', iconActive: 'home' },
   { name: 'analysis', label: '分析', href: '/analysis', icon: 'scan-outline', iconActive: 'scan' },
   { name: 'advice', label: '拍摄', href: '/advice', icon: 'camera-outline', iconActive: 'camera' },
+  { name: 'profile', label: '我的', href: '/profile', icon: 'person-outline', iconActive: 'person' },
 ];
 
 export function TabBar() {
