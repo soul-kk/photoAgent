@@ -26,7 +26,8 @@ type KimiConfig struct {
 	TimeoutSec     int    `mapstructure:"timeout_sec"`
 	MaxConcurrent  int    `mapstructure:"max_concurrent"`
 	QueueWaitSec   int    `mapstructure:"queue_wait_sec"`
-	ScoreMaxTokens int    `mapstructure:"score_max_tokens"`
+	ScoreMaxTokens   int `mapstructure:"score_max_tokens"`
+	AnalyzeMaxTokens int `mapstructure:"analyze_max_tokens"`
 }
 
 type ImageConfig struct {

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -101,13 +100,13 @@ func (k *KimiController) RegisterProtected(r *gin.RouterGroup) {
 
 func (k *KimiController) photoAnalyzeMethodHint(c *gin.Context) {
 	libx.Err(c, http.StatusMethodNotAllowed,
-		"请使用 POST（需先登录；Bearer token）；multipart：image/file；可选 prompt、focus_dimension（构图|色彩|曝光|内容识别 或 composition|color|exposure|content）。默认 stream=false：四维 JSON 评分+整体分析；指定 focus_dimension 时额外返回 focused_deep_analysis。stream=true 为 SSE Markdown。路径：POST /api/kimi/photography/analyze-image",
+		"请使用 POST（需先登录；Bearer token）；multipart：image/file；可选 prompt、focus_dimension（构图|色彩|曝光|拍摄内容 或 composition|color|exposure|content）。默认 stream=false：四维 JSON 评分+整体分析；指定 focus_dimension 时额外返回 focused_deep_analysis。stream=true 为 SSE Markdown。路径：POST /api/kimi/photography/analyze-image",
 		nil)
 }
 
 func (k *KimiController) photoScoreMethodHint(c *gin.Context) {
 	libx.Err(c, http.StatusMethodNotAllowed,
-		"请使用 POST（需先登录；Header：Authorization: Bearer <token>）；multipart 字段 image 或 file。路径：POST /api/kimi/photography/score-image 或 POST /api/kimi/score-photo；返回各维度 0–100 分与文字分析 JSON",
+		"请使用 POST（需先登录；Bearer token）；multipart：image/file；可选 prompt、focus_dimension（构图|色彩|曝光|拍摄内容）。路径：POST /api/kimi/photography/score-image；返回 exposure/color/composition/content 四维 0–100 分 + text_analysis + improvement_tips；指定 focus_dimension 时额外返回 focused_deep_analysis",
 		nil)
 }
 
@@ -119,60 +118,7 @@ const kimiModelK26 = "kimi-k2.6"
 
 const photographyUserBase = "请根据上述要求，对附图从摄影角度进行分析并给出建议。"
 
-// photographyScoreSystemPrompt 固定量表 + 仅 JSON 输出，便于多图可比与复现（该模型 temperature 由接口固定为 1）。
-var photographyScoreSystemPrompt = strings.TrimSpace(`
-你是摄影赛事初审评委：同一量表、跨所有图片可比；禁止讨好用户、禁止「安全牌」中间分。
-所有分数为 0–100 的整数；只依据画面可见证据；看不清则在对应 dimension_notes 写明「信息不足」并该维度倾向给 35–45（不要默认 50）。
-
-【分数—评语一致性（必须满足）】
-dimension_notes 对该维度的褒贬，必须与该维度分数同向：评语以批评为主、且未写实质亮点时，该维度分通常不得高于 48；若写明「严重/显著/尽失/严重模糊/伪影严重」等，该维度须落在 15–40。
-若某维度评语同时含明显优缺点，分数应落在 40–65 并体现主次，不得四项一律塞 48–52。
-禁止在 exposure/content 指出严重画面缺陷时，仍将对应分数拉到 45 以上，除非明确解释是可辨认的创意表达。
-
-【锚点刻度——每维打分前先选档再微调个位数，避免扎堆整十】
-每维优先用 17、23、31、38、44、52、58、63、71、78、86 等非克隆数，除非该维确实恰为典型「典型中段」才可使用 50 附近。
-
-1) composition_score：主体、线条、留白、平衡、裁切与视线引导。
-   - 15–25：严重失衡、致命裁切、主体淹没。
-   - 35–45：完整但不讲究；缺少引导与节奏。
-   - 55–65：稳妥可用，有一点设计感或一笔败笔。
-   - 72–82：结构清晰，引导明确，有章法。
-2) color_score：白平衡、色调与题材关系；和谐度与饱和度控制。
-   - 15–25：明显偏色/脏灰/过饱和干扰主题。
-   - 35–45：尚可但单调、层次弱或轻微偏色。
-   - 55–65：整体舒服、略有平庸或轻微遗憾。
-   - 72–82：色彩推动情绪与层次，克制有力。
-   - 88+：极少给出；需画面与题材高度匹配且具辨识度。
-3) exposure_score：明暗层次、高光/暗部细节、是否过曝或欠曝、主体亮度是否合理。
-   - 15–25：明显过曝、死黑或主体亮度严重不可辨。
-   - 35–45：曝光可看但层次不足，主体或背景有明显明暗问题。
-   - 55–65：曝光基本稳妥，有少量高光/暗部遗憾。
-   - 72–82：层次清楚，明暗关系服务主体。
-4) content_score：主体是否清晰、画面信息是否可读、关键元素与干扰物、内容表达是否明确。
-   - 15–25：主体难辨，关键内容被遮挡或干扰严重。
-   - 35–45：能识别内容但表达松散，干扰物或信息不足明显。
-   - 55–65：主体和场景关系基本清楚，但记忆点一般。
-   - 72–82：内容明确，有可感知的主题关系或瞬间表达。
-
-【输出】仅输出一个 JSON 对象，勿 Markdown、勿 JSON 外文字。
-键必须完全一致：
-{
-  "composition_score": <int>,
-  "color_score": <int>,
-  "exposure_score": <int>,
-  "content_score": <int>,
-  "text_analysis": "<string，中文：总体评价 + 可执行改进建议，分段可用 \\n>",
-  "dimension_notes": {
-    "composition": "<一句，须与 composition_score 同向>",
-    "color": "<一句，须与 color_score 同向>",
-    "exposure": "<一句，须与 exposure_score 同向>",
-    "content": "<一句，须与 content_score 同向>"
-  }
-}
-不要输出 overall_score，由服务端按固定权重计算。
-`)
-
-const photographyScoreUserBase = "请仅依据附图，按系统量表输出四维评分 JSON；dimension_notes 每项一句话；text_analysis 200–500 字为宜。"
+const photographyScoreUserBase = "请仅依据附图输出四维评分、整体分析与改进建议。"
 
 type kimiGenerateBody struct {
 	Text   string   `json:"text"`
@@ -553,38 +499,37 @@ func (k *KimiController) PhotographyAnalyzeImage(c *gin.Context) {
 		{"role": "system", "content": photographyAnalyzeJSONSystemPrompt(hasFocus, focusKey)},
 		{"role": "user", "content": userContent},
 	}
-	extras := kimiK26ChatExtras(photographyAnalyzeJSONMaxTokens)
-	extras["response_format"] = map[string]string{"type": "json_object"}
-
 	tKimi := time.Now()
-	status, respBody, err := k.postKimiChat(c.Request.Context(), model, base, key, msgs, extras)
-	log.Printf("photography/analyze: kimi round-trip %s focus=%v err=%v", time.Since(tKimi), hasFocus, err)
-	if err != nil {
-		if k.respondKimiGateBusy(c, err) {
-			return
-		}
-		log.Printf("kimi upstream error: %v", err)
-		libx.Err(c, http.StatusBadGateway, "调用 Kimi 失败", publicKimiNetworkErr(err))
-		return
-	}
 	expectFocus := ""
 	if hasFocus {
 		expectFocus = focusKey
 	}
-	k.finishPhotographyAnalyzeJSONFromUpstream(c, status, respBody, model, imgMeta, extra, expectFocus)
+	payload, err := k.requestPhotographyAnalyzeJSON(c.Request.Context(), model, base, key, msgs, expectFocus)
+	log.Printf("photography/analyze: kimi round-trip %s focus=%v err=%v", time.Since(tKimi), hasFocus, err)
+	if err != nil {
+		if err.Error() == "kimi_auth_failed" {
+			libx.Err(c, http.StatusUnauthorized,
+				"Kimi 鉴权失败：密钥与 base_url 需同属一国别开放平台", nil)
+			return
+		}
+		if k.respondKimiGateBusy(c, err) {
+			return
+		}
+		if strings.HasPrefix(err.Error(), "kimi_status_") {
+			libx.Err(c, http.StatusBadGateway, "Kimi 返回错误", err)
+			return
+		}
+		log.Printf("kimi upstream error: %v", err)
+		if strings.Contains(err.Error(), "模型返回") || strings.Contains(err.Error(), "缺少") ||
+			strings.Contains(err.Error(), "dimension_scores") || strings.Contains(err.Error(), "improvement_tips") {
+			libx.Err(c, http.StatusBadGateway, "模型未返回合法 JSON，请重试", err)
+			return
+		}
+		libx.Err(c, http.StatusBadGateway, "调用 Kimi 失败", publicKimiNetworkErr(err))
+		return
+	}
+	k.respondPhotographyAnalyzeJSON(c, payload, model, imgMeta, extra, expectFocus)
 	log.Printf("photography/analyze: done total=%s", time.Since(t0))
-}
-
-const photographyScoreRubricID = "photography_v2"
-
-type photographyScoreModelJSON struct {
-	ColorScore       float64           `json:"color_score"`
-	CompositionScore float64           `json:"composition_score"`
-	TechniqueScore   *float64          `json:"technique_score"`
-	ExposureScore    *float64          `json:"exposure_score"`
-	ContentScore     *float64          `json:"content_score"`
-	TextAnalysis     string            `json:"text_analysis"`
-	DimensionNotes   map[string]string `json:"dimension_notes"`
 }
 
 func clampScoreInt(x int) int {
@@ -597,27 +542,26 @@ func clampScoreInt(x int) int {
 	return x
 }
 
-func roundClampScore(f float64) int {
-	return clampScoreInt(int(math.Round(f)))
-}
-
-func roundClampScorePtr(f *float64) (int, bool) {
-	if f == nil {
-		return 0, false
-	}
-	return roundClampScore(*f), true
-}
-
-// weightedOverallPhotographyScore 固定权重，保证同一张图的四项子分转为总分时口径一致（与模型可能给出的总分解耦）。
-func weightedOverallPhotographyScore(composition, color, exposure, content int) int {
-	v := 0.30*float64(composition) + 0.25*float64(color) + 0.25*float64(exposure) + 0.20*float64(content)
-	return clampScoreInt(int(math.Round(v)))
-}
-
 func extractJSONFromModelText(s string) string {
 	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if block := extractMarkdownJSONCodeBlock(s); block != "" {
+		if obj := extractJSONObject(block); obj != "" {
+			return obj
+		}
+		return block
+	}
+	if obj := extractJSONObject(s); obj != "" {
+		return obj
+	}
+	return s
+}
+
+func extractMarkdownJSONCodeBlock(s string) string {
 	if !strings.HasPrefix(s, "```") {
-		return s
+		return ""
 	}
 	lines := strings.Split(s, "\n")
 	var b strings.Builder
@@ -639,86 +583,47 @@ func extractJSONFromModelText(s string) string {
 	return strings.TrimSpace(b.String())
 }
 
-func parsePhotographyScoreModelJSON(jsonStr string) (photographyScoreModelJSON, error) {
-	var p photographyScoreModelJSON
-	jsonStr = strings.TrimSpace(jsonStr)
-	if jsonStr == "" {
-		return p, fmt.Errorf("模型输出为空")
+// extractJSONObject 从混杂文本中截取首个完整 JSON 对象；截断时返回已扫描前缀供报错。
+func extractJSONObject(s string) string {
+	start := strings.Index(s, "{")
+	if start < 0 {
+		return ""
 	}
-	if err := json.Unmarshal([]byte(jsonStr), &p); err != nil {
-		return p, err
-	}
-	return p, nil
-}
-
-func (k *KimiController) finishKimiScoreFromUpstream(c *gin.Context, status int, respBody []byte, model string) {
-	if status != http.StatusOK {
-		if status == http.StatusUnauthorized {
-			libx.Err(c, http.StatusUnauthorized,
-				"Kimi 鉴权失败：密钥与 base_url 需同属一国别开放平台——在中国大陆申请的密钥请设 kimi.base_url 为 https://api.moonshot.cn/v1；国际/ kimi.ai 侧密钥一般用 https://api.moonshot.ai/v1。并核对密钥未过期、整串粘贴且无多余字符",
-				nil)
-			return
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		ch := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
 		}
-		libx.Err(c, status, "Kimi 返回错误", fmt.Errorf("%s", string(respBody)))
-		return
-	}
-	text, err := parseKimiChatResponse(respBody)
-	if err != nil {
-		libx.Err(c, http.StatusBadGateway, "解析 Kimi 响应失败", err)
-		return
-	}
-	jsonStr := extractJSONFromModelText(text)
-	payload, err := parsePhotographyScoreModelJSON(jsonStr)
-	if err != nil {
-		libx.Err(c, http.StatusBadGateway, "模型未返回合法 JSON，请重试或检查提示词冲突", err)
-		return
-	}
-	cScore := roundClampScore(payload.ColorScore)
-	coScore := roundClampScore(payload.CompositionScore)
-	eScore, hasExposure := roundClampScorePtr(payload.ExposureScore)
-	if !hasExposure {
-		if fallback, ok := roundClampScorePtr(payload.TechniqueScore); ok {
-			eScore = fallback
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return strings.TrimSpace(s[start : i+1])
+			}
 		}
 	}
-	contentScore, hasContent := roundClampScorePtr(payload.ContentScore)
-	if !hasContent {
-		contentScore = weightedOverallPhotographyScore(coScore, cScore, eScore, eScore)
-	}
-
-	overall := weightedOverallPhotographyScore(coScore, cScore, eScore, contentScore)
-	notes := payload.DimensionNotes
-	if notes == nil {
-		notes = map[string]string{}
-	}
-	if notes["exposure"] == "" && notes["technique"] != "" {
-		notes["exposure"] = notes["technique"]
-	}
-	if notes["content"] == "" {
-		notes["content"] = "内容识别维度未返回独立评语，请结合总体分析复核。"
-	}
-	lowDiff := cScore >= 46 && cScore <= 54 && coScore >= 46 && coScore <= 54 && eScore >= 46 && eScore <= 54 && contentScore >= 46 && contentScore <= 54
-	disp := gin.H{"low_differentiation": lowDiff}
-	if lowDiff {
-		disp["hint"] = "四项子分均落在 46–54，易为模型「安全中段」；请对照 dimension_notes 人工复核。"
-	}
-	libx.Ok(c, "ok", gin.H{
-		"rubric_id":         photographyScoreRubricID,
-		"model":             model,
-		"composition_score": coScore,
-		"color_score":       cScore,
-		"exposure_score":    eScore,
-		"content_score":     contentScore,
-		"technique_score":   eScore,
-		"overall_score":     overall,
-		"overall_weights":   gin.H{"composition": 0.30, "color": 0.25, "exposure": 0.25, "content": 0.20},
-		"text_analysis":     strings.TrimSpace(payload.TextAnalysis),
-		"dimension_notes":   notes,
-		"score_dispersion":  disp,
-	})
+	return strings.TrimSpace(s[start:])
 }
 
-// PhotographyScoreImage 多模态摄影评分：构图 / 色彩 / 曝光 / 内容识别四项 0–100 整数 + 文字分析，JSON 结构由服务端校验并统一计算 overall。
+// PhotographyScoreImage 与 analyze-image 同四维量表，返回扁平字段（composition/color/exposure/content_score）。
 func (k *KimiController) PhotographyScoreImage(c *gin.Context) {
 	cfg := config.GetConfig()
 	key := sanitizeKimiAPIKey(cfg.Kimi.APIKey)
@@ -733,14 +638,13 @@ func (k *KimiController) PhotographyScoreImage(c *gin.Context) {
 		base = "https://api.moonshot.ai/v1"
 	}
 
+	ensureMultipartParsed(c)
 	extra := strings.TrimSpace(c.Query("prompt"))
 	if extra == "" {
 		extra = strings.TrimSpace(c.PostForm("prompt"))
 	}
-	userLine := photographyScoreUserBase
-	if extra != "" {
-		userLine = photographyScoreUserBase + "\n\n【用户补充】 " + extra
-	}
+	focusKey, hasFocus := readAnalyzeFocusDimension(c)
+	userLine := buildAnalyzeUserLine(photographyScoreUserBase, extra, focusKey, hasFocus)
 
 	raw, mimeHint, httpStatus, errMsg := readSingleImageBinary(c)
 	if httpStatus != 0 {
@@ -748,7 +652,7 @@ func (k *KimiController) PhotographyScoreImage(c *gin.Context) {
 		return
 	}
 
-	dataURL, _, err := imageBinaryToDataURL(raw, mimeHint)
+	dataURL, imgMeta, err := imageBinaryToDataURL(raw, mimeHint)
 	raw = nil
 	if err != nil {
 		libx.Err(c, http.StatusBadRequest, err.Error(), nil)
@@ -757,29 +661,37 @@ func (k *KimiController) PhotographyScoreImage(c *gin.Context) {
 
 	userContent := buildKimiUserContent(userLine, []string{dataURL}, nil)
 	msgs := []map[string]any{
-		{"role": "system", "content": photographyScoreSystemPrompt},
+		{"role": "system", "content": photographyAnalyzeJSONSystemPrompt(hasFocus, focusKey)},
 		{"role": "user", "content": userContent},
 	}
-
-	scoreMaxTokens := config.GetConfig().Kimi.ScoreMaxTokens
-	if scoreMaxTokens <= 0 {
-		scoreMaxTokens = 800
+	expectFocus := ""
+	if hasFocus {
+		expectFocus = focusKey
 	}
-	extras := kimiK26ChatExtras(scoreMaxTokens)
-	extras["response_format"] = map[string]string{
-		"type": "json_object",
-	}
-
-	status, respBody, err := k.postKimiChat(c.Request.Context(), model, base, key, msgs, extras)
+	payload, err := k.requestPhotographyAnalyzeJSON(c.Request.Context(), model, base, key, msgs, expectFocus)
 	if err != nil {
+		if err.Error() == "kimi_auth_failed" {
+			libx.Err(c, http.StatusUnauthorized,
+				"Kimi 鉴权失败：密钥与 base_url 需同属一国别开放平台", nil)
+			return
+		}
 		if k.respondKimiGateBusy(c, err) {
+			return
+		}
+		if strings.HasPrefix(err.Error(), "kimi_status_") {
+			libx.Err(c, http.StatusBadGateway, "Kimi 返回错误", err)
+			return
+		}
+		if strings.Contains(err.Error(), "模型返回") || strings.Contains(err.Error(), "缺少") ||
+			strings.Contains(err.Error(), "dimension_scores") || strings.Contains(err.Error(), "improvement_tips") {
+			libx.Err(c, http.StatusBadGateway, "模型未返回合法四维 JSON，请重试", err)
 			return
 		}
 		log.Printf("kimi upstream error: %v", err)
 		libx.Err(c, http.StatusBadGateway, "调用 Kimi 失败", publicKimiNetworkErr(err))
 		return
 	}
-	k.finishKimiScoreFromUpstream(c, status, respBody, model)
+	k.respondPhotographyScoreFlat(c, payload, model, imgMeta, extra, expectFocus)
 }
 
 func (k *KimiController) Generate(c *gin.Context) {

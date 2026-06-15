@@ -16,9 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const photographyAnalyzeMaxTokens = 1024
-
-const photographyAnalyzeRubricID = "photography_analyze_v2"
+const photographyAnalyzeStreamMaxTokens = 2048
 
 // 默认 stream=false 返回四维 JSON 评分；stream=true 时输出 Markdown（含可选深入维度章节）。
 func wantsPhotographyAnalyzeStream(c *gin.Context) bool {
@@ -203,9 +201,9 @@ func (k *KimiController) photographyAnalyzeStream(
 		{"role": "system", "content": sysPrompt},
 		{"role": "user", "content": buildKimiUserContent(userLine, []string{dataURL}, nil)},
 	}
-	maxTok := photographyAnalyzeMaxTokens
+	maxTok := photographyAnalyzeStreamMaxTokens
 	if hasFocus {
-		maxTok = photographyAnalyzeJSONMaxTokens
+		maxTok = photographyAnalyzeMaxTokens()
 	}
 	extras := kimiK26ChatExtras(maxTok)
 
@@ -218,7 +216,7 @@ func (k *KimiController) photographyAnalyzeStream(
 		metaExtra["focus_dimension"] = focusKey
 		metaExtra["focus_dimension_label"] = analyzeDimensionLabels[focusKey]
 	}
-	if err := writePhotographyStreamMeta(c, photographyAnalyzeRubricID, model, compressMeta, metaExtra); err != nil {
+	if err := writePhotographyStreamMeta(c, photographyAnalyzeRubricV2, model, compressMeta, metaExtra); err != nil {
 		return
 	}
 

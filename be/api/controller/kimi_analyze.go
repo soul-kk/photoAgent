@@ -1,20 +1,37 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
+	"go-service-starter/config"
 	"go-service-starter/core/libx"
 
 	"github.com/gin-gonic/gin"
 )
 
 const photographyAnalyzeRubricV2 = "photography_analyze_v2"
-const photographyAnalyzeJSONMaxTokens = 2200
+const photographyAnalyzeJSONMaxTokensDefault = 3000
 
-// photographyAnalyzeDimensionScores 与产品 2.1 一致：构图 / 色彩 / 曝光 / 内容识别（对拍摄内容评分）
+func photographyAnalyzeMaxTokens() int {
+	n := config.GetConfig().Kimi.AnalyzeMaxTokens
+	if n <= 0 {
+		n = config.GetConfig().Kimi.ScoreMaxTokens
+	}
+	if n <= 0 {
+		n = photographyAnalyzeJSONMaxTokensDefault
+	}
+	if n < 1200 {
+		n = 1200
+	}
+	return n
+}
+
+// photographyAnalyzeDimensionScores 与产品 2.1 一致：构图 / 色彩 / 曝光 / 拍摄内容
 type photographyAnalyzeDimensionScores struct {
 	Composition int `json:"composition"`
 	Color       int `json:"color"`
@@ -42,11 +59,11 @@ var analyzeDimensionLabels = map[string]string{
 	"composition": "构图",
 	"color":       "色彩",
 	"exposure":    "曝光",
-	"content":     "内容识别",
+	"content":     "拍摄内容",
 }
 
 func normalizeAnalyzeFocusDimension(raw string) (string, bool) {
-	raw = strings.TrimSpace(strings.ToLower(raw))
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", false
 	}
@@ -60,8 +77,12 @@ func normalizeAnalyzeFocusDimension(raw string) (string, bool) {
 		"曝光":          "exposure",
 		"内容识别":        "content",
 		"内容":          "content",
+		"拍摄内容":        "content",
 	}
 	if v, ok := aliases[raw]; ok {
+		return v, true
+	}
+	if v, ok := aliases[strings.ToLower(raw)]; ok {
 		return v, true
 	}
 	return "", false
@@ -116,7 +137,7 @@ func photographyAnalyzeJSONSystemPrompt(hasFocus bool, focusKey string) string {
 - composition（构图）：主体位置、留白、平衡、引导线、层次与裁切；
 - color（色彩）：色调、饱和度、搭配、白平衡与情绪；
 - exposure（曝光）：明暗层次、高光/暗部、过曝或欠曝；
-- content（内容识别）：对拍摄内容的识别与表现评分——主体是否明确、场景类型、关键元素、干扰物、主题表达力。
+- content（拍摄内容）：主体是否明确、场景类型、关键元素、干扰物、主题表达力；
 
 【输出】仅输出一个 JSON 对象，勿 Markdown、勿 JSON 外文字：
 {
@@ -151,7 +172,7 @@ func photographyAnalyzeStreamSystemPrompt(hasFocus bool, focusKey string) string
 | 构图 | 0–100 | 一句 |
 | 色彩 | 0–100 | 一句 |
 | 曝光 | 0–100 | 一句 |
-| 内容识别 | 0–100 | 一句 |
+| 拍摄内容 | 0–100 | 一句 |
 
 ## 整体分析
 200–400 字，综合四维评价与改进方向。
@@ -172,6 +193,9 @@ func photographyAnalyzeStreamSystemPrompt(hasFocus bool, focusKey string) string
 func parsePhotographyAnalyzeModelJSON(jsonStr string, expectFocus string) (photographyAnalyzeModelJSON, error) {
 	var p photographyAnalyzeModelJSON
 	jsonStr = strings.TrimSpace(jsonStr)
+	if jsonStr == "" {
+		return p, fmt.Errorf("模型返回空 JSON")
+	}
 	if err := json.Unmarshal([]byte(jsonStr), &p); err != nil {
 		return p, err
 	}
@@ -206,36 +230,64 @@ func parsePhotographyAnalyzeModelJSON(jsonStr string, expectFocus string) (photo
 	return p, nil
 }
 
+func parsePhotographyAnalyzeFromKimiBody(respBody []byte, expectFocus string) (photographyAnalyzeModelJSON, error) {
+	text, err := parseKimiChatResponse(respBody)
+	if err != nil {
+		return photographyAnalyzeModelJSON{}, err
+	}
+	raw := extractJSONFromModelText(text)
+	if raw == "" {
+		preview := text
+		if len(preview) > 160 {
+			preview = preview[:160] + "…"
+		}
+		return photographyAnalyzeModelJSON{}, fmt.Errorf("模型返回空 JSON（原文预览: %q）", preview)
+	}
+	return parsePhotographyAnalyzeModelJSON(raw, expectFocus)
+}
+
+func (k *KimiController) requestPhotographyAnalyzeJSON(
+	ctx context.Context, model, base, key string, msgs []map[string]any, expectFocus string,
+) (photographyAnalyzeModelJSON, error) {
+	maxTok := photographyAnalyzeMaxTokens()
+	extras := kimiK26ChatExtras(maxTok)
+	extras["response_format"] = map[string]string{"type": "json_object"}
+
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			log.Printf("photography/analyze: JSON 解析失败，重试第 %d 次", attempt+1)
+		}
+		status, respBody, err := k.postKimiChat(ctx, model, base, key, msgs, extras)
+		if err != nil {
+			return photographyAnalyzeModelJSON{}, err
+		}
+		if status != http.StatusOK {
+			if status == http.StatusUnauthorized {
+				return photographyAnalyzeModelJSON{}, fmt.Errorf("kimi_auth_failed")
+			}
+			return photographyAnalyzeModelJSON{}, fmt.Errorf("kimi_status_%d: %s", status, string(respBody))
+		}
+		payload, parseErr := parsePhotographyAnalyzeFromKimiBody(respBody, expectFocus)
+		if parseErr == nil {
+			return payload, nil
+		}
+		lastErr = parseErr
+		log.Printf("photography/analyze: parse_err=%v max_tokens=%d", parseErr, maxTok)
+	}
+	return photographyAnalyzeModelJSON{}, lastErr
+}
+
 func weightedAnalyzeOverallScore(s photographyAnalyzeDimensionScores) int {
 	v := 0.30*float64(s.Composition) + 0.25*float64(s.Color) +
 		0.25*float64(s.Exposure) + 0.20*float64(s.Content)
 	return clampScoreInt(int(v + 0.5))
 }
 
-func (k *KimiController) finishPhotographyAnalyzeJSONFromUpstream(
-	c *gin.Context, status int, respBody []byte, model string,
+func (k *KimiController) respondPhotographyAnalyzeJSON(
+	c *gin.Context, payload photographyAnalyzeModelJSON, model string,
 	imgMeta map[string]any, userPrompt string, expectFocus string,
 ) {
-	if status != http.StatusOK {
-		if status == http.StatusUnauthorized {
-			libx.Err(c, http.StatusUnauthorized,
-				"Kimi 鉴权失败：密钥与 base_url 需同属一国别开放平台", nil)
-			return
-		}
-		libx.Err(c, status, "Kimi 返回错误", fmt.Errorf("%s", string(respBody)))
-		return
-	}
-	text, err := parseKimiChatResponse(respBody)
-	if err != nil {
-		libx.Err(c, http.StatusBadGateway, "解析 Kimi 响应失败", err)
-		return
-	}
-	payload, err := parsePhotographyAnalyzeModelJSON(extractJSONFromModelText(text), expectFocus)
-	if err != nil {
-		libx.Err(c, http.StatusBadGateway, "模型未返回合法 JSON，请重试", err)
-		return
-	}
-
 	overall := weightedAnalyzeOverallScore(payload.DimensionScores)
 	data := gin.H{
 		"rubric_id":         photographyAnalyzeRubricV2,
@@ -263,6 +315,66 @@ func (k *KimiController) finishPhotographyAnalyzeJSONFromUpstream(
 	if expectFocus != "" {
 		data["focus_dimension"] = expectFocus
 		data["focus_dimension_label"] = analyzeDimensionLabels[expectFocus]
+	}
+	libx.Ok(c, "ok", data)
+}
+
+// respondPhotographyScoreFlat score-image 扁平四维响应（与 analyze-image 同量表，字段兼容 Apifox）。
+func (k *KimiController) respondPhotographyScoreFlat(
+	c *gin.Context, payload photographyAnalyzeModelJSON, model string,
+	imgMeta map[string]any, userPrompt string, expectFocus string,
+) {
+	s := payload.DimensionScores
+	overall := weightedAnalyzeOverallScore(s)
+	notes := map[string]string{
+		"composition": strings.TrimSpace(payload.DimensionNotes.Composition),
+		"color":       strings.TrimSpace(payload.DimensionNotes.Color),
+		"exposure":    strings.TrimSpace(payload.DimensionNotes.Exposure),
+		"content":     strings.TrimSpace(payload.DimensionNotes.Content),
+	}
+	lowDiff := s.Color >= 46 && s.Color <= 54 && s.Composition >= 46 && s.Composition <= 54 &&
+		s.Exposure >= 46 && s.Exposure <= 54 && s.Content >= 46 && s.Content <= 54
+	disp := gin.H{"low_differentiation": lowDiff}
+	if lowDiff {
+		disp["hint"] = "四项子分均落在 46–54，易为模型「安全中段」；请对照 dimension_notes 人工复核。"
+	}
+
+	data := gin.H{
+		"rubric_id":         photographyAnalyzeRubricV2,
+		"model":             model,
+		"format":            "flat",
+		"image":             imgMeta,
+		"composition_score": s.Composition,
+		"color_score":       s.Color,
+		"exposure_score":    s.Exposure,
+		"content_score":     s.Content,
+		"dimension_scores": gin.H{
+			"composition": s.Composition,
+			"color":       s.Color,
+			"exposure":    s.Exposure,
+			"content":     s.Content,
+		},
+		"overall_score":     overall,
+		"overall_weights": gin.H{
+			"composition": 0.30,
+			"color":       0.25,
+			"exposure":    0.25,
+			"content":     0.20,
+		},
+		"dimension_notes":  notes,
+		"dimension_labels": analyzeDimensionLabels,
+		"text_analysis":    strings.TrimSpace(payload.OverallAnalysis),
+		"improvement_tips": payload.ImprovementTips,
+		"score_dispersion": disp,
+	}
+	if userPrompt != "" {
+		data["prompt"] = userPrompt
+	}
+	if expectFocus != "" {
+		data["focus_dimension"] = expectFocus
+		data["focus_dimension_label"] = analyzeDimensionLabels[expectFocus]
+		data["focused_dimension"] = expectFocus
+		data["focused_deep_analysis"] = strings.TrimSpace(payload.FocusedDeepAnalysis)
 	}
 	libx.Ok(c, "ok", data)
 }

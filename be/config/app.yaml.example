@@ -22,7 +22,8 @@ kimi:
   timeout_sec: 300          # 上游 Kimi HTTP 超时（秒）
   max_concurrent: 5         # 同时打 Kimi 的最大请求数
   queue_wait_sec: 30        # 排队等槽位最长时间，超时返回 503
-  score_max_tokens: 800     # score-image 输出 token 上限
+  score_max_tokens: 800     # 已废弃，score-image 与 analyze 共用 analyze_max_tokens
+  analyze_max_tokens: 3000  # analyze/score-image JSON 输出 token 上限
 
 image:
   max_long_edge: 1024       # 上传 Kimi 前压缩长边（像素）
