@@ -161,5 +161,5 @@ func AutoMigrateAll(db any) error {
 	if !ok {
 		return errors.New("invalid gorm db")
 	}
-	return gdb.AutoMigrate(&domain.User{})
+	return gdb.AutoMigrate(&domain.User{}, &domain.AnalysisHistory{})
 }

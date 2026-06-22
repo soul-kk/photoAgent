@@ -10,6 +10,7 @@ import (
 
 	"go-service-starter/config"
 	"go-service-starter/core/libx"
+	"go-service-starter/domain"
 
 	"github.com/gin-gonic/gin"
 )
@@ -240,4 +241,16 @@ func (k *KimiController) PhotographyCompareImages(c *gin.Context) {
 		},
 		"photos": ranked,
 	})
+
+	// 保存历史记录
+	if k.historyRepo != nil {
+		resultMap := gin.H{
+			"best_index":     bestIdx,
+			"best_reason":    strings.TrimSpace(payload.BestReason),
+			"summary":        strings.TrimSpace(payload.Summary),
+			"ranking":        ranking,
+			"photo_count":    len(images),
+		}
+		go k.saveAnalysisHistory(libx.Uid(c), domain.AnalysisTypeCompare, "", "", resultMap)
+	}
 }

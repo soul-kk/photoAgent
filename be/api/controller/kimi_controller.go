@@ -18,12 +18,16 @@ import (
 	"go-service-starter/core/imageprep"
 	"go-service-starter/core/kimigate"
 	"go-service-starter/core/libx"
+	"go-service-starter/core/store/mysql"
+	"go-service-starter/domain"
+	"go-service-starter/repository"
 
 	"github.com/gin-gonic/gin"
 )
 
 type KimiController struct {
-	gate *kimigate.Gate
+	gate        *kimigate.Gate
+	historyRepo domain.AnalysisHistoryRepository
 }
 
 func NewKimiController() *KimiController {
@@ -44,7 +48,16 @@ func NewKimiController() *KimiController {
 		queueSec = 30
 	}
 	log.Printf("kimigate: max_concurrent=%d timeout_sec=%d queue_wait_sec=%d", maxC, timeoutSec, queueSec)
-	return &KimiController{gate: gate}
+
+	var historyRepo domain.AnalysisHistoryRepository
+	db, err := mysql.InitMySQL()
+	if err != nil {
+		log.Printf("history mysql init failed: %v", err)
+	} else {
+		historyRepo = repository.NewAnalysisHistoryRepo(db)
+	}
+
+	return &KimiController{gate: gate, historyRepo: historyRepo}
 }
 
 func (k *KimiController) respondKimiGateBusy(c *gin.Context, err error) bool {
@@ -54,6 +67,72 @@ func (k *KimiController) respondKimiGateBusy(c *gin.Context, err error) bool {
 	c.Header("Retry-After", "30")
 	libx.Err(c, http.StatusServiceUnavailable, "AI 服务繁忙，请稍后重试", err)
 	return true
+}
+
+func (k *KimiController) saveAnalysisHistory(userID uint, analysisType domain.AnalysisType, prompt, focus string, resultJSON any) {
+	if k.historyRepo == nil {
+		return
+	}
+	h := &domain.AnalysisHistory{
+		UserID:         userID,
+		AnalysisType:   analysisType,
+		InputPrompt:    prompt,
+		FocusDimension: focus,
+	}
+	if resultJSON != nil {
+		// 序列化完整结果（支持 struct 或 map）
+		if jsonBytes, err := json.Marshal(resultJSON); err == nil {
+			h.ResultJSON = string(jsonBytes)
+		}
+		// 提取分数（尝试从 map 或 struct 的字段获取）
+		switch m := resultJSON.(type) {
+		case map[string]any:
+			if score, ok := m["overall_score"]; ok {
+				if f, err := toFloat64(score); err == nil {
+					h.Score = &f
+				}
+			} else if s, ok := m["score"]; ok {
+				if f, err := toFloat64(s); err == nil {
+					h.Score = &f
+				}
+			}
+		default:
+			// struct 类型，通过 json 标签提取
+			if jsonBytes, err := json.Marshal(resultJSON); err == nil {
+				var tmp map[string]any
+				if json.Unmarshal(jsonBytes, &tmp) == nil {
+					if score, ok := tmp["overall_score"]; ok {
+						if f, err := toFloat64(score); err == nil {
+							h.Score = &f
+						}
+					} else if s, ok := tmp["score"]; ok {
+						if f, err := toFloat64(s); err == nil {
+							h.Score = &f
+						}
+					}
+				}
+			}
+		}
+	}
+	ctx := context.Background()
+	if err := k.historyRepo.Create(ctx, h); err != nil {
+		log.Printf("save analysis history failed: %v", err)
+	}
+}
+
+func toFloat64(v any) (float64, error) {
+	switch n := v.(type) {
+	case float64:
+		return n, nil
+	case float32:
+		return float64(n), nil
+	case int:
+		return float64(n), nil
+	case int64:
+		return float64(n), nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to float64", v)
+	}
 }
 
 // kimiK26ChatExtras kimi-k2.6 要求 temperature=1；非流式长生成需足够 max_tokens。
@@ -529,6 +608,12 @@ func (k *KimiController) PhotographyAnalyzeImage(c *gin.Context) {
 		return
 	}
 	k.respondPhotographyAnalyzeJSON(c, payload, model, imgMeta, extra, expectFocus)
+
+	// 保存历史记录
+	if k.historyRepo != nil {
+		go k.saveAnalysisHistory(libx.Uid(c), domain.AnalysisTypeAnalyze, extra, expectFocus, payload)
+	}
+
 	log.Printf("photography/analyze: done total=%s", time.Since(t0))
 }
 
@@ -692,6 +777,11 @@ func (k *KimiController) PhotographyScoreImage(c *gin.Context) {
 		return
 	}
 	k.respondPhotographyScoreFlat(c, payload, model, imgMeta, extra, expectFocus)
+
+	// 保存历史记录
+	if k.historyRepo != nil {
+		go k.saveAnalysisHistory(libx.Uid(c), domain.AnalysisTypeScore, extra, expectFocus, payload)
+	}
 }
 
 func (k *KimiController) Generate(c *gin.Context) {

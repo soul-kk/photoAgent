@@ -11,6 +11,7 @@ import (
 	"go-service-starter/config"
 	"go-service-starter/core/kimigate"
 	"go-service-starter/core/libx"
+	"go-service-starter/domain"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,44 +20,29 @@ const photographyShootAdviceRubricID = "shoot_advice_v1"
 
 const photographyShootAdviceMaxTokens = 2500
 
-// photographyShootAdviceSystemPrompt AI 拍摄建议：场景图四维度评分 + 前期拍摄建议（产品 2.2）
+// photographyShootAdviceSystemPrompt AI 拍摄建议：场景图四维简评 + 前期拍摄建议（产品 2.2）
 var photographyShootAdviceSystemPrompt = strings.TrimSpace(`
 你是专业摄影前期指导与场景评估师。用户会上传一张「当前所处场景」的参考照片，并说明打算拍摄的主体。
 请仅依据画面可见信息分析，不臆造场景中不存在的元素；看不清处须在对应 dimension_notes 写明「信息不足」。
 
 【任务】
-1. 从构图、色彩、曝光、内容识别四个维度对当前场景参考图打分（0–100 整数）并各写一句评语；
-2. 结合用户主体描述，给出可执行的前期拍摄建议（机位、焦段、要点）。
+1. 结合用户主体描述，给出可执行的前期拍摄建议（机位、焦段、要点）。
 
-【评分刻度】每项 0–100 整数；评语须与分数同向（分高褒、分低指出问题）。
-- composition（构图）：主体位置、留白、平衡、引导线、裁切与层次；
-- color（色彩）：色调、饱和度、搭配、白平衡与情绪契合；
-- exposure（曝光）：明暗层次、高光/暗部细节、是否过曝或欠曝；
-- content（内容识别）：主体是否清晰、场景类型、关键元素与干扰物。
 
 【输出】仅输出一个 JSON 对象，勿 Markdown、勿 JSON 外文字。键必须完全一致：
 {
   "scene_summary": "<string，1–2 句概括场景与主体关系>",
-  "dimension_scores": {
-    "composition": <int 0–100>,
-    "color": <int 0–100>,
-    "exposure": <int 0–100>,
-    "content": <int 0–100>
-  },
   "dimension_notes": {
-    "composition": "<string，一句，与 composition 分数同向>",
-    "color": "<string，一句>",
-    "exposure": "<string，一句>",
-    "content": "<string，一句>"
+    "composition": "<string，一句，关于场景的评价>",
+    "color": "<string，一句，关于色彩的评价>",
+    "exposure": "<string，一句，关于曝光的评价>",
+    "content": "<string，一句，关于内容的评价>"
   },
   "subject_plan": "<string，结合用户主体，说明最佳表现方式>",
   "camera_position": {
     "description": "<string，推荐机位与站位>",
     "angle": "<string，如正面/侧面/俯拍/仰拍等>",
-    "distance": "<string，建议距离>",
-    "annotations": [
-      { "id": 1, "area": "<区域>", "label": "<标注>", "hint": "<箭头/框线语义>" }
-    ]
+    "distance": "<string，建议距离>"
   },
   "focal_length": {
     "range": "<string，如 35–50mm>",
@@ -69,17 +55,9 @@ var photographyShootAdviceSystemPrompt = strings.TrimSpace(`
 }
 
 【硬性要求】
-- dimension_scores 四项均为 0–100 整数；dimension_notes 四项各一句且与分数同向。
-- shooting_tips 3–5 条；annotations 至少 2 条；alternatives 0–2 条，无则 []。
+- shooting_tips 3–5 条；alternatives 0–2 条，无则 []。
 - 语气友善、具体；默认简体中文。
 `)
-
-type photographyShootAdviceDimensionScores struct {
-	Composition int `json:"composition"`
-	Color       int `json:"color"`
-	Exposure    int `json:"exposure"`
-	Content     int `json:"content"`
-}
 
 type photographyShootAdviceDimensionNotes struct {
 	Composition string `json:"composition"`
@@ -89,20 +67,13 @@ type photographyShootAdviceDimensionNotes struct {
 }
 
 type photographyShootAdviceModelJSON struct {
-	SceneSummary     string                              `json:"scene_summary"`
-	DimensionScores  photographyShootAdviceDimensionScores `json:"dimension_scores"`
-	DimensionNotes   photographyShootAdviceDimensionNotes  `json:"dimension_notes"`
+	SceneSummary    string                             `json:"scene_summary"`
+	DimensionNotes  photographyShootAdviceDimensionNotes `json:"dimension_notes"`
 	SubjectPlan      string                              `json:"subject_plan"`
-	CameraPosition  struct {
+	CameraPosition struct {
 		Description string `json:"description"`
 		Angle       string `json:"angle"`
 		Distance    string `json:"distance"`
-		Annotations []struct {
-			ID    int    `json:"id"`
-			Area  string `json:"area"`
-			Label string `json:"label"`
-			Hint  string `json:"hint"`
-		} `json:"annotations"`
 	} `json:"camera_position"`
 	FocalLength struct {
 		Range    string `json:"range"`
@@ -145,17 +116,13 @@ func parsePhotographyShootAdviceModelJSON(jsonStr string) (photographyShootAdvic
 	}
 	for _, pair := range []struct {
 		name string
-		score int
-		note  string
+		note string
 	}{
-		{"composition", p.DimensionScores.Composition, p.DimensionNotes.Composition},
-		{"color", p.DimensionScores.Color, p.DimensionNotes.Color},
-		{"exposure", p.DimensionScores.Exposure, p.DimensionNotes.Exposure},
-		{"content", p.DimensionScores.Content, p.DimensionNotes.Content},
+		{"composition", p.DimensionNotes.Composition},
+		{"color", p.DimensionNotes.Color},
+		{"exposure", p.DimensionNotes.Exposure},
+		{"content", p.DimensionNotes.Content},
 	} {
-		if pair.score < 0 || pair.score > 100 {
-			return p, fmt.Errorf("dimension_scores.%s 须在 0–100", pair.name)
-		}
 		if strings.TrimSpace(pair.note) == "" {
 			return p, fmt.Errorf("缺少 dimension_notes.%s", pair.name)
 		}
@@ -164,11 +131,6 @@ func parsePhotographyShootAdviceModelJSON(jsonStr string) (photographyShootAdvic
 		return p, fmt.Errorf("shooting_tips 不足 3 条")
 	}
 	return p, nil
-}
-
-func weightedShootAdviceSceneScore(s photographyShootAdviceDimensionScores) int {
-	v := 0.30*float64(s.Composition) + 0.25*float64(s.Color) + 0.25*float64(s.Exposure) + 0.20*float64(s.Content)
-	return clampScoreInt(int(v + 0.5))
 }
 
 func (k *KimiController) photoShootAdviceMethodHint(c *gin.Context) {
@@ -262,29 +224,29 @@ func (k *KimiController) finishKimiShootAdviceFromUpstream(
 		libx.Err(c, http.StatusBadGateway, "模型未返回合法 JSON，请重试", err)
 		return
 	}
-	overall := weightedShootAdviceSceneScore(payload.DimensionScores)
 	libx.Ok(c, "ok", gin.H{
 		"rubric_id": photographyShootAdviceRubricID,
 		"model":     model,
 		"subject":   subject,
 		"image":     imgMeta,
-		"overall_score": overall,
-		"overall_weights": gin.H{
-			"composition": 0.30,
-			"color":       0.25,
-			"exposure":    0.25,
-			"content":     0.20,
-		},
-		"advice": payload,
+		"advice":    payload,
 	})
+
+	// 保存历史记录
+	if k.historyRepo != nil {
+		payloadMap := make(map[string]any)
+		payloadBytes, _ := json.Marshal(payload)
+		json.Unmarshal(payloadBytes, &payloadMap)
+		go k.saveAnalysisHistory(libx.Uid(c), domain.AnalysisTypeShootAdvice, subject, "", payloadMap)
+	}
 }
 
-// photographyShootAdviceStreamSystemPrompt 流式：四维度评分 + 拍摄建议。
+// photographyShootAdviceStreamSystemPrompt 流式：场景简评 + 拍摄建议。
 var photographyShootAdviceStreamSystemPrompt = strings.TrimSpace(`
 你是专业摄影前期指导。用户上传当前场景参考图并说明拍摄主体。
 请用 Markdown 输出（简体中文）：
 ## 场景概览
-## 四维度评分（每项 0–100 分 + 一句评语）
+## 场景解读
 ### 构图
 ### 色彩
 ### 曝光
@@ -293,7 +255,7 @@ var photographyShootAdviceStreamSystemPrompt = strings.TrimSpace(`
 ## 推荐机位与焦段
 ## 拍摄要点（3–5 条）
 ## 总结
-仅依据画面可见信息；评分与评语须同向；语气友善、可执行。
+仅依据画面可见信息；看不清处写明「信息不足」；语气友善、可执行。不要输出机位示意图标注列表。
 `)
 
 func (k *KimiController) photographyShootAdviceStream(

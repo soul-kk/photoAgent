@@ -10,6 +10,7 @@ import (
 
 	"go-service-starter/config"
 	"go-service-starter/core/libx"
+	"go-service-starter/domain"
 
 	"github.com/gin-gonic/gin"
 )
@@ -234,4 +235,12 @@ func (k *KimiController) PhotographyToneStyle(c *gin.Context) {
 		resp["image"] = imgMeta
 	}
 	libx.Ok(c, "ok", resp)
+
+	// 保存历史记录
+	if k.historyRepo != nil {
+		resultMap := make(map[string]any)
+		respBytes, _ := json.Marshal(resp)
+		json.Unmarshal(respBytes, &resultMap)
+		go k.saveAnalysisHistory(libx.Uid(c), domain.AnalysisTypeToneStyle, styleDesc, "", resultMap)
+	}
 }

@@ -23,4 +23,7 @@ func GenerateRouter(r *gin.Engine) {
 	protected.Use(middleware.JWTAuthMiddleware())
 	auth.RegisterProtected(protected)
 	kimi.RegisterProtected(protected)
+
+	history := controller.NewHistoryController()
+	history.RegisterProtected(protected)
 }
