@@ -29,6 +29,8 @@ fe/yarn-error.*
 fe/.env*.local
 fe/.env
 
+docs/
+
 # TypeScript
 fe/*.tsbuildinfo
 
