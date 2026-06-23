@@ -1,4 +1,4 @@
-import { API_BASE } from './config';
+import { API_BASE } from "./config";
 
 export type ApiEnvelope<T> = {
   code: number;
@@ -55,10 +55,13 @@ async function parseJson<T>(res: Response): Promise<T> {
   return body.data;
 }
 
-export async function login(account: string, password: string): Promise<string> {
+export async function login(
+  account: string,
+  password: string,
+): Promise<string> {
   const res = await fetch(`${API_BASE}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ account, password }),
   });
   const data = await parseJson<{ access_token: string }>(res);
@@ -69,19 +72,19 @@ export async function fetchShootAdvice(
   token: string,
   imageUri: string,
   subject: string,
-  mimeType = 'image/jpeg',
+  mimeType = "image/jpeg",
 ): Promise<ShootAdviceResponse> {
   const form = new FormData();
-  const name = imageUri.split('/').pop() || 'photo.jpg';
-  form.append('image', {
+  const name = imageUri.split("/").pop() || "photo.jpg";
+  form.append("image", {
     uri: imageUri,
     name,
     type: mimeType,
   } as unknown as Blob);
-  form.append('subject', subject);
+  form.append("subject", subject);
 
   const res = await fetch(`${API_BASE}/api/kimi/photography/shoot-advice`, {
-    method: 'POST',
+    method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: form,
   });
@@ -115,23 +118,23 @@ export type CompareImagesResponse = {
   ranking: number[];
   photos: ComparePhotoResult[];
 };
-
+//暂时用不上
 export async function fetchCompareImages(
   token: string,
   imageUris: string[],
 ): Promise<CompareImagesResponse> {
   const form = new FormData();
   imageUris.forEach((uri, i) => {
-    const name = uri.split('/').pop() || `photo-${i + 1}.jpg`;
-    form.append('images', {
+    const name = uri.split("/").pop() || `photo-${i + 1}.jpg`;
+    form.append("images", {
       uri,
       name,
-      type: 'image/jpeg',
+      type: "image/jpeg",
     } as unknown as Blob);
   });
 
   const res = await fetch(`${API_BASE}/api/kimi/photography/compare-images`, {
-    method: 'POST',
+    method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: form,
   });
@@ -204,19 +207,21 @@ export type PhotographyAnalyzeResponse = {
 };
 
 export type AnalyzeFocusDimension =
-  | 'composition'
-  | 'color'
-  | 'exposure'
-  | 'content';
+  | "composition"
+  | "color"
+  | "exposure"
+  | "content";
 
 const FOCUS_DIM_MAP: Record<string, AnalyzeFocusDimension> = {
-  构图: 'composition',
-  色彩: 'color',
-  曝光: 'exposure',
-  内容识别: 'content',
+  构图: "composition",
+  色彩: "color",
+  曝光: "exposure",
+  内容识别: "content",
 };
 
-export function focusDimensionFromLabel(label: string): AnalyzeFocusDimension | undefined {
+export function focusDimensionFromLabel(
+  label: string,
+): AnalyzeFocusDimension | undefined {
   return FOCUS_DIM_MAP[label];
 }
 
@@ -230,28 +235,63 @@ export async function fetchPhotographyAnalyze(
   },
 ): Promise<PhotographyAnalyzeResponse> {
   const form = new FormData();
-  const name = imageUri.split('/').pop() || 'photo.jpg';
-  form.append('image', {
+  const name = imageUri.split("/").pop() || "photo.jpg";
+  form.append("image", {
     uri: imageUri,
     name,
-    type: options?.mimeType ?? 'image/jpeg',
+    type: options?.mimeType ?? "image/jpeg",
   } as unknown as Blob);
   if (options?.prompt?.trim()) {
-    form.append('prompt', options.prompt.trim());
+    form.append("prompt", options.prompt.trim());
   }
   if (options?.focusDimension) {
-    form.append('focus_dimension', options.focusDimension);
+    form.append("focus_dimension", options.focusDimension);
   }
 
   const res = await fetch(
-    `${API_BASE}/api/kimi/photography/analyze-image?stream=false`,
+    `${API_BASE}/api/kimi/photography/score-image?stream=false`,
     {
-      method: 'POST',
+      method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       body: form,
     },
   );
   return parseJson<PhotographyAnalyzeResponse>(res);
+}
+
+// ─── Analysis History ─────────────────────────────────────────────────────────
+
+export type AnalysisHistoryResultJson = {
+  dimension_scores: { composition: number; color: number; exposure: number; content: number };
+  dimension_notes: { composition: string; color: string; exposure: string; content: string };
+  overall_analysis: string;
+  improvement_tips: string[];
+  focused_dimension?: string;
+  focused_deep_analysis?: string;
+};
+
+export type AnalysisHistoryItem = {
+  id: number;
+  user_id: number;
+  analysis_type: string;
+  input_prompt: string;
+  focus_dimension: string;
+  result_json: string;
+  created_at: string;
+};
+
+export type AnalysisHistoryResponse = {
+  limit: number;
+  list: AnalysisHistoryItem[];
+  page: number;
+  total: number;
+};
+
+export async function fetchAnalysisHistory(token: string): Promise<AnalysisHistoryResponse> {
+  const res = await fetch(`${API_BASE}/api/history/analysis`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return parseJson<AnalysisHistoryResponse>(res);
 }
 
 export async function fetchToneStyle(
@@ -260,18 +300,18 @@ export async function fetchToneStyle(
   imageUri?: string | null,
 ): Promise<ToneStyleResponse> {
   const form = new FormData();
-  form.append('style_description', styleDescription);
+  form.append("style_description", styleDescription);
   if (imageUri) {
-    const name = imageUri.split('/').pop() || 'ref.jpg';
-    form.append('image', {
+    const name = imageUri.split("/").pop() || "ref.jpg";
+    form.append("image", {
       uri: imageUri,
       name,
-      type: 'image/jpeg',
+      type: "image/jpeg",
     } as unknown as Blob);
   }
 
   const res = await fetch(`${API_BASE}/api/kimi/photography/tone-style`, {
-    method: 'POST',
+    method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: form,
   });

@@ -66,7 +66,7 @@ export default function HomeScreen() {
             </View>
           </TouchableOpacity>
 
-          <TouchableOpacity
+          {/* <TouchableOpacity
             style={[styles.card, styles.cardBorderBottom]}
             onPress={() => router.push('/compare')}
             activeOpacity={0.8}
@@ -100,7 +100,7 @@ export default function HomeScreen() {
             <View style={[styles.tag, styles.tagExtend]}>
               <Text style={styles.tagText}>拓展功能</Text>
             </View>
-          </TouchableOpacity>
+          </TouchableOpacity> */}
         </View>
       </ScrollView>
 

@@ -6,6 +6,7 @@ import {
   StyleSheet,
   SafeAreaView,
   Alert,
+  ScrollView,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -76,6 +77,19 @@ export default function ProfileScreen() {
           <Text style={styles.infoValue}>{user?.role ?? '—'}</Text>
         </View>
       </View>
+
+      {/* Action cards */}
+      <TouchableOpacity
+        style={styles.actionCard}
+        onPress={() => router.push('/analysis-history' as any)}
+        activeOpacity={0.8}
+      >
+        <View style={styles.actionLeft}>
+          <Ionicons name="time-outline" size={16} color="#AAAAAA" />
+          <Text style={styles.actionText}>AI 摄影分析记录</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={16} color="#444444" />
+      </TouchableOpacity>
 
       {/* Logout */}
       <TouchableOpacity style={styles.logoutCard} onPress={handleLogout} activeOpacity={0.8}>
@@ -162,6 +176,25 @@ const styles = StyleSheet.create({
     color: '#555555',
   },
   separator: { height: 1, backgroundColor: '#2A2A2A', marginHorizontal: 18 },
+  actionCard: {
+    marginHorizontal: 24,
+    marginTop: 16,
+    backgroundColor: '#141414',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+  },
+  actionLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  actionText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    color: '#FFFFFF',
+  },
   logoutCard: {
     marginHorizontal: 24,
     marginTop: 16,

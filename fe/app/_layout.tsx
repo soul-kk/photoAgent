@@ -40,6 +40,8 @@ function InnerLayout({ fontsLoaded }: { fontsLoaded: boolean }) {
       <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="auth" options={{ headerShown: false }} />
+        <Stack.Screen name="analysis-history" options={{ headerShown: false }} />
+        <Stack.Screen name="analysis-history-detail" options={{ headerShown: false }} />
       </Stack>
       <StatusBar style="light" />
     </ThemeProvider>
